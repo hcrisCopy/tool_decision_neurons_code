@@ -1,5 +1,5 @@
 transformers==4.55.2
-vllm==0.8.5
+vllm>=0.8.5
 accelerate==1.13.0
 datasets>=2.20.0
 huggingface-hub>=0.24.0

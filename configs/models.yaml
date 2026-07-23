@@ -2,18 +2,24 @@ models:
   qwen3-1.7b:
     repo_id: Qwen/Qwen3-1.7B
     local_path: ../Qwen/Qwen3-1.7B
+    enable_thinking: "false"
   qwen3-4b-instruct:
     repo_id: Qwen/Qwen3-4B-Instruct-2507
     local_path: ../Qwen/Qwen3-4B-Instruct-2507
+    enable_thinking: auto
   qwen3-14b:
     repo_id: Qwen/Qwen3-14B
     local_path: ../Qwen/Qwen3-14B
+    enable_thinking: "false"
   qwen3-32b:
     repo_id: Qwen/Qwen3-32B
     local_path: ../Qwen/Qwen3-32B
+    enable_thinking: "false"
   llama3.1-8b:
     repo_id: meta-llama/Llama-3.1-8B-Instruct
     local_path: ../meta-llama/Llama-3.1-8B-Instruct
+    enable_thinking: auto
   llama3.3-70b:
     repo_id: meta-llama/Llama-3.3-70B-Instruct
     local_path: ../meta-llama/Llama-3.3-70B-Instruct
+    enable_thinking: auto

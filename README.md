@@ -144,7 +144,7 @@ pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https
 pip install -r requirements.txt
 ```
 
-如果当前机器暂时不支持 vLLM，可以先把 `requirements.txt` 里的 `vllm==0.8.5` 注释掉；正式跑多模型标签，尤其是 70B 模型时，建议在 Linux GPU 服务器上安装 vLLM。
+`requirements.txt` 中 `transformers==4.55.2`、`vllm>=0.8.5` 用于覆盖 Qwen3 / Qwen3-2507 和 Llama Instruct 的官方 Hugging Face / vLLM 推理接口需求。如果当前机器暂时不支持 vLLM，可以先把 `requirements.txt` 里的 vLLM 依赖注释掉；正式跑多模型标签，尤其是 70B 模型时，建议在 Linux GPU 服务器上安装 vLLM。
 
 安装后简单检查：
 
@@ -261,6 +261,8 @@ llama3.1-8b
 llama3.3-70b
 ```
 
+模型加载使用 Hugging Face Transformers / vLLM 的官方通用接口。Qwen3 普通模型在 `configs/models.yaml` 里显式设置 `enable_thinking: "false"`，用于对齐本阶段的 no reasoning 标签收集；`Qwen3-4B-Instruct-2507` 官方本身是 non-thinking instruct 模型，因此配置为 `auto`，不额外传 thinking 开关；Llama Instruct 模型也不传 Qwen 专用参数。
+
 相关代码：
 
 | 文件 | 作用 |
@@ -269,7 +271,7 @@ llama3.3-70b
 | `code/01_labeling/README.md` | 本阶段说明 |
 | `code/third_party/when2tool_adapter/env_schemas/*.json` | When2Tool 官方工具 schema，用于构造模型看到的 tools |
 | `code/common/model_registry.py` | 解析 6 个模型 alias、repo_id 和本地相对路径 |
-| `configs/models.yaml` | 6 个模型的路径配置 |
+| `configs/models.yaml` | 6 个模型的路径和 thinking 开关配置 |
 | `configs/labeling.yaml` | 标签阶段默认配置记录 |
 | `scripts/run_01_labeling_demo.sh` | 单模型小样本 demo |
 | `scripts/run_01_labeling_all.sh` | 6 模型全量标签脚本 |

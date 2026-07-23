@@ -92,7 +92,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--max-model-len", type=int, default=32768)
     parser.add_argument("--vllm-dtype", default="bfloat16")
-    parser.add_argument("--enable-thinking", default="false", choices=["auto", "true", "false"])
+    parser.add_argument(
+        "--enable-thinking",
+        default="auto",
+        choices=["auto", "true", "false"],
+        help="Override model config. auto means use configs/models.yaml and omit the kwarg when the model config is also auto.",
+    )
     parser.add_argument("--prefer-local", action="store_true", default=True)
     parser.add_argument("--no-prefer-local", action="store_false", dest="prefer_local")
     parser.add_argument("--check-data-only", action="store_true", help="Validate raw parquet loading and tool schemas without loading a model.")
@@ -731,6 +736,9 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
         config_path=args.models_config,
         prefer_local=args.prefer_local and not bool(args.model_path),
     )
+    effective_args = deepcopy(args)
+    if effective_args.enable_thinking == "auto":
+        effective_args.enable_thinking = model_spec.enable_thinking
     model_alias = normalize_model_key(model_alias_or_path)
     if args.model_path:
         model_alias = normalize_model_key(args.model_alias)
@@ -744,11 +752,12 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
     print(f"repo_id: {model_spec.repo_id}")
     print(f"resolved_path: {model_spec.resolved_path}")
     print(f"resolved_from_local: {model_spec.resolved_from_local}")
-    print(f"backend: {args.backend}")
+    print(f"backend: {effective_args.backend}")
+    print(f"enable_thinking: {effective_args.enable_thinking}")
     print("=" * 80)
 
     tool_format = detect_tool_format(model_spec.repo_id)
-    generator = build_generator(model_spec.resolved_path, args)
+    generator = build_generator(model_spec.resolved_path, effective_args)
     split_summaries = []
     for subset in args.subsets:
         for split in args.splits:
@@ -761,7 +770,7 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
                     raw_dir=raw_dir,
                     model_output_root=model_output_root,
                     generator=generator,
-                    args=args,
+                    args=effective_args,
                     tool_format=tool_format,
                 )
             )
@@ -776,9 +785,10 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
         "label_definition": "tool_necessary = 0 if hard_no_tool final answer is correct else 1",
         "prompt_mode": "hard_no_tool",
         "reasoning_mode": "no_reasoning",
-        "backend": args.backend,
-        "max_rounds": args.max_rounds,
-        "max_new_tokens": args.max_new_tokens,
+        "backend": effective_args.backend,
+        "enable_thinking": effective_args.enable_thinking,
+        "max_rounds": effective_args.max_rounds,
+        "max_new_tokens": effective_args.max_new_tokens,
         "splits": split_summaries,
     }
     write_json(model_output_root / "manifest.json", manifest)

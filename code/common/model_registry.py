@@ -13,26 +13,32 @@ DEFAULT_MODELS: Dict[str, Dict[str, str]] = {
     "qwen3-1.7b": {
         "repo_id": "Qwen/Qwen3-1.7B",
         "local_path": "../Qwen/Qwen3-1.7B",
+        "enable_thinking": "false",
     },
     "qwen3-4b-instruct": {
         "repo_id": "Qwen/Qwen3-4B-Instruct-2507",
         "local_path": "../Qwen/Qwen3-4B-Instruct-2507",
+        "enable_thinking": "auto",
     },
     "qwen3-14b": {
         "repo_id": "Qwen/Qwen3-14B",
         "local_path": "../Qwen/Qwen3-14B",
+        "enable_thinking": "false",
     },
     "qwen3-32b": {
         "repo_id": "Qwen/Qwen3-32B",
         "local_path": "../Qwen/Qwen3-32B",
+        "enable_thinking": "false",
     },
     "llama3.1-8b": {
         "repo_id": "meta-llama/Llama-3.1-8B-Instruct",
         "local_path": "../meta-llama/Llama-3.1-8B-Instruct",
+        "enable_thinking": "auto",
     },
     "llama3.3-70b": {
         "repo_id": "meta-llama/Llama-3.3-70B-Instruct",
         "local_path": "../meta-llama/Llama-3.3-70B-Instruct",
+        "enable_thinking": "auto",
     },
 }
 
@@ -44,6 +50,7 @@ class ModelSpec:
     local_path: str
     resolved_path: str
     resolved_from_local: bool
+    enable_thinking: str = "auto"
 
 
 def normalize_model_alias(name: str) -> str:
@@ -83,6 +90,7 @@ def resolve_model_spec(
             local_path=alias_or_path,
             resolved_path=alias_or_path,
             resolved_from_local=False,
+            enable_thinking="auto",
         )
 
     cfg = models[key]
@@ -101,4 +109,5 @@ def resolve_model_spec(
         local_path=local_path,
         resolved_path=resolved,
         resolved_from_local=resolved_from_local,
+        enable_thinking=str(cfg.get("enable_thinking") or "auto"),
     )
