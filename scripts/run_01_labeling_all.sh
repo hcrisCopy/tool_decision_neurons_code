@@ -10,15 +10,26 @@ BACKEND="${BACKEND:-vllm}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-2048}"
+NUM_SHARDS="${NUM_SHARDS:-1}"
+SHARD_INDEX="${SHARD_INDEX:-0}"
 
-MODELS=(
-  qwen3-1.7b
-  qwen3-4b-instruct
-  qwen3-14b
-  qwen3-32b
-  llama3.1-8b
-  llama3.3-70b
-)
+if [[ -n "${MODEL_ALIASES:-}" ]]; then
+  read -r -a MODELS <<< "${MODEL_ALIASES}"
+else
+  MODELS=(
+    qwen3-1.7b
+    qwen3-4b-instruct
+    qwen3-14b
+    qwen3-32b
+    llama3.1-8b
+    llama3.3-70b
+  )
+fi
+
+SHARD_ARGS=()
+if [[ "${NUM_SHARDS}" != "1" ]]; then
+  SHARD_ARGS=(--num-shards "${NUM_SHARDS}" --shard-index "${SHARD_INDEX}")
+fi
 
 for MODEL_ALIAS in "${MODELS[@]}"; do
   python code/01_labeling/build_when2tool_labels.py \
@@ -28,5 +39,6 @@ for MODEL_ALIAS in "${MODELS[@]}"; do
     --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
     --max-model-len "${MAX_MODEL_LEN}" \
     --max-new-tokens "${MAX_NEW_TOKENS}" \
+    "${SHARD_ARGS[@]}" \
     --overwrite
 done

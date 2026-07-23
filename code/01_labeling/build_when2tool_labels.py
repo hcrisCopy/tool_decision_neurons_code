@@ -80,13 +80,15 @@ RAW_COLUMNS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-alias", default="qwen3-1.7b", help="Model alias from configs/models.yaml, or 'all'.")
-    parser.add_argument("--model-path", default="", help="Override model path/repo_id for a single model run.")
+    parser.add_argument("--model-path", default="", help="Override with an existing local model path for a single model run.")
     parser.add_argument("--models-config", default=None)
     parser.add_argument("--data-root", default="../tool_decision_neurons_data")
     parser.add_argument("--raw-dir", default="", help="Default: <data-root>/datasets/raw_when2tool")
     parser.add_argument("--output-root", default="", help="Default: <data-root>/labels")
     parser.add_argument("--subsets", nargs="+", default=list(SUBSETS), choices=SUBSETS)
     parser.add_argument("--splits", nargs="+", default=list(SPLITS), choices=SPLITS)
+    parser.add_argument("--num-shards", type=int, default=1, help="Split each raw split into N round-robin shards for multi-machine runs.")
+    parser.add_argument("--shard-index", type=int, default=0, help="Current shard index, 0-based.")
     parser.add_argument("--backend", default="hf", choices=["hf", "vllm"])
     parser.add_argument("--batch-size", type=int, default=0, help="0 means all active tasks per round, matching When2Tool evaluate_batched.")
     parser.add_argument("--max-samples", type=int, default=0, help="Demo/debug only. 0 means all samples.")
@@ -109,6 +111,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--prefer-local", action="store_true", default=True)
     parser.add_argument("--no-prefer-local", action="store_false", dest="prefer_local")
+    parser.add_argument(
+        "--allow-remote-model-download",
+        action="store_true",
+        help="Explicit opt-in only. By default all model files must already exist locally.",
+    )
     parser.add_argument("--check-data-only", action="store_true", help="Validate raw parquet loading and tool schemas without loading a model.")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -116,6 +123,13 @@ def parse_args() -> argparse.Namespace:
 
 def normalize_model_key(name: str) -> str:
     return str(name or "").strip().lower().replace("_", "-")
+
+
+def validate_args(args: argparse.Namespace) -> None:
+    if args.num_shards < 1:
+        raise ValueError("--num-shards must be >= 1")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError("--shard-index must satisfy 0 <= shard_index < num_shards")
 
 
 def detect_tool_format(model_name_or_path: str) -> str:
@@ -140,7 +154,14 @@ def parse_json_field(value: Any, default: Any) -> Any:
     return json.loads(text)
 
 
-def load_raw_split(raw_dir: Path, subset: str, split: str, max_samples: int = 0) -> List[Dict[str, Any]]:
+def load_raw_split(
+    raw_dir: Path,
+    subset: str,
+    split: str,
+    max_samples: int = 0,
+    num_shards: int = 1,
+    shard_index: int = 0,
+) -> List[Dict[str, Any]]:
     split_dir = raw_dir / subset
     files = sorted(split_dir.glob(f"{split}-*.parquet")) or sorted(split_dir.glob(f"{split}*.parquet"))
     if not files:
@@ -149,6 +170,8 @@ def load_raw_split(raw_dir: Path, subset: str, split: str, max_samples: int = 0)
     missing = [col for col in RAW_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"Missing required raw columns for {subset}/{split}: {missing}")
+    if num_shards > 1:
+        df = df.iloc[shard_index::num_shards].reset_index(drop=True)
     if max_samples > 0:
         df = df.head(max_samples)
 
@@ -401,14 +424,23 @@ class HFGenerator:
     def __init__(self, model_path: str, args: argparse.Namespace):
         self.max_new_tokens = args.max_new_tokens
         self.enable_thinking = enable_thinking_value(args.enable_thinking)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        self.local_files_only = not bool(args.allow_remote_model_download)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            local_files_only=self.local_files_only,
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             trust_remote_code=True,
             torch_dtype=torch_dtype_from_name(args.torch_dtype),
             device_map=args.device_map,
+            local_files_only=self.local_files_only,
         ).eval()
-        self.generation_config = GenerationConfig.from_pretrained(model_path)
+        self.generation_config = GenerationConfig.from_pretrained(
+            model_path,
+            local_files_only=self.local_files_only,
+        )
         if args.temperature is not None:
             self.generation_config.temperature = float(args.temperature)
         if args.top_p is not None:
@@ -458,8 +490,16 @@ class VLLMGenerator:
         self.SamplingParams = SamplingParams
         self.max_new_tokens = args.max_new_tokens
         self.enable_thinking = enable_thinking_value(args.enable_thinking)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.generation_config = GenerationConfig.from_pretrained(model_path)
+        self.local_files_only = not bool(args.allow_remote_model_download)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            local_files_only=self.local_files_only,
+        )
+        self.generation_config = GenerationConfig.from_pretrained(
+            model_path,
+            local_files_only=self.local_files_only,
+        )
         if args.temperature is not None:
             self.generation_config.temperature = float(args.temperature)
         if args.top_p is not None:
@@ -686,6 +726,19 @@ def build_label_rows(outputs: List[Dict[str, Any]], model_alias: str, model_path
     return rows
 
 
+def split_output_dir(model_output_root: Path, subset: str, split: str, args: argparse.Namespace) -> Path:
+    base = model_output_root / subset / split
+    if args.num_shards > 1:
+        return base / f"shard_{args.shard_index:05d}_of_{args.num_shards:05d}"
+    return base
+
+
+def manifest_output_path(model_output_root: Path, args: argparse.Namespace) -> Path:
+    if args.num_shards > 1:
+        return model_output_root / f"manifest_shard_{args.shard_index:05d}_of_{args.num_shards:05d}.json"
+    return model_output_root / "manifest.json"
+
+
 def summarize_labels(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     n = len(rows)
     correct = sum(int(row["no_tool_correct"]) for row in rows)
@@ -723,13 +776,25 @@ def run_split(
     args: argparse.Namespace,
     tool_format: str,
 ) -> Dict[str, Any]:
-    tasks = load_raw_split(raw_dir, subset, split, max_samples=args.max_samples)
+    tasks = load_raw_split(
+        raw_dir,
+        subset,
+        split,
+        max_samples=args.max_samples,
+        num_shards=args.num_shards,
+        shard_index=args.shard_index,
+    )
     print(f"Loaded {len(tasks)} raw When2Tool tasks: {subset}/{split}")
     outputs = evaluate_hard_no_tool(tasks, generator, args, tool_format)
     rows = build_label_rows(outputs, model_alias, model_path, subset, split)
+    for row in rows:
+        row["num_shards"] = args.num_shards
+        row["shard_index"] = args.shard_index
     summary = summarize_labels(rows)
+    summary["num_shards"] = args.num_shards
+    summary["shard_index"] = args.shard_index
 
-    split_dir = model_output_root / subset / split
+    split_dir = split_output_dir(model_output_root, subset, split, args)
     if split_dir.exists() and not args.overwrite:
         raise FileExistsError(f"Output exists: {split_dir}. Use --overwrite.")
     split_dir.mkdir(parents=True, exist_ok=True)
@@ -746,6 +811,7 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
         args.model_path or model_alias_or_path,
         config_path=args.models_config,
         prefer_local=args.prefer_local and not bool(args.model_path),
+        allow_remote_download=args.allow_remote_model_download,
     )
     effective_args = deepcopy(args)
     if effective_args.enable_thinking == "auto":
@@ -763,6 +829,7 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
     print(f"repo_id: {model_spec.repo_id}")
     print(f"resolved_path: {model_spec.resolved_path}")
     print(f"resolved_from_local: {model_spec.resolved_from_local}")
+    print(f"local_files_only: {not bool(effective_args.allow_remote_model_download)}")
     print(f"backend: {effective_args.backend}")
     print(f"enable_thinking: {effective_args.enable_thinking}")
     print("=" * 80)
@@ -798,12 +865,16 @@ def run_model(model_alias_or_path: str, args: argparse.Namespace) -> None:
         "reasoning_mode": "no_reasoning",
         "backend": effective_args.backend,
         "enable_thinking": effective_args.enable_thinking,
+        "allow_remote_model_download": bool(effective_args.allow_remote_model_download),
+        "num_shards": effective_args.num_shards,
+        "shard_index": effective_args.shard_index,
         "max_rounds": effective_args.max_rounds,
         "max_new_tokens": effective_args.max_new_tokens,
         "splits": split_summaries,
     }
-    write_json(model_output_root / "manifest.json", manifest)
-    print(f"Saved model manifest: {model_output_root / 'manifest.json'}")
+    manifest_path = manifest_output_path(model_output_root, effective_args)
+    write_json(manifest_path, manifest)
+    print(f"Saved model manifest: {manifest_path}")
 
 
 def check_data_only(args: argparse.Namespace) -> None:
@@ -812,16 +883,27 @@ def check_data_only(args: argparse.Namespace) -> None:
     print(f"Checking raw When2Tool data: {raw_dir}")
     for subset in args.subsets:
         for split in args.splits:
-            tasks = load_raw_split(raw_dir, subset, split, max_samples=args.max_samples)
+            tasks = load_raw_split(
+                raw_dir,
+                subset,
+                split,
+                max_samples=args.max_samples,
+                num_shards=args.num_shards,
+                shard_index=args.shard_index,
+            )
             for task in tasks:
                 build_tools_schema(task)
             counts = pd.Series([task["task_type"] for task in tasks]).value_counts().sort_index().to_dict()
-            print(f"{subset}/{split}: {len(tasks)} tasks, task_type_counts={counts}")
+            print(
+                f"{subset}/{split}: {len(tasks)} tasks, "
+                f"shard={args.shard_index}/{args.num_shards}, task_type_counts={counts}"
+            )
     print("Data/schema check passed.")
 
 
 def main() -> None:
     args = parse_args()
+    validate_args(args)
     if args.check_data_only:
         check_data_only(args)
         return

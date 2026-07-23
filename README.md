@@ -274,51 +274,60 @@ llama3.3-70b
 | `configs/models.yaml` | 6 个模型的路径和 thinking 开关配置 |
 | `configs/labeling.yaml` | 标签阶段默认配置记录 |
 | `scripts/run_01_labeling_demo.sh` | 单模型小样本 demo |
-| `scripts/run_01_labeling_all.sh` | 6 模型全量标签脚本 |
+| `scripts/run_01_labeling_all.sh` | 6 模型全量标签脚本，支持多机分块 |
 
-单模型 demo：
+本阶段禁止自动从 Hugging Face 下载或读缓存：原始数据必须提前放在 `$DATA_ROOT/datasets/raw_when2tool/`，模型权重必须提前放在 `configs/models.yaml` 记录的本地相对路径。缺文件时脚本直接报错。
+
+先检查数据，不加载模型：
 
 ```bash
 conda activate tool_neurons
-bash scripts/run_01_labeling_demo.sh qwen3-1.7b
-```
-
-默认只跑 `single_hop/train` 前 5 条，用来检查环境、模型路径、chat template 和输出格式。可以通过环境变量改：
-
-```bash
-MAX_SAMPLES=20 BACKEND=hf bash scripts/run_01_labeling_demo.sh qwen3-1.7b
-```
-
-只检查原始数据和工具 schema，不加载模型：
-
-```bash
 python code/01_labeling/build_when2tool_labels.py \
   --data-root ../tool_decision_neurons_data \
   --check-data-only
 ```
 
-全量跑 6 个模型：
+### 单卡
+
+小样本 demo：
 
 ```bash
-conda activate tool_neurons
-bash scripts/run_01_labeling_all.sh
+MAX_SAMPLES=5 BACKEND=hf bash scripts/run_01_labeling_demo.sh qwen3-1.7b
 ```
 
-默认 `run_01_labeling_all.sh` 使用 `BACKEND=vllm`、`TENSOR_PARALLEL_SIZE=1`。标签脚本默认每轮把所有 active 样本一起送入生成，和 When2Tool 的 `evaluate_batched` 保持一致；如需单卡小批量调试，可以额外传 `--batch-size`。多卡机器上可以直接改环境变量：
-
-```bash
-BACKEND=vllm TENSOR_PARALLEL_SIZE=4 bash scripts/run_01_labeling_all.sh
-```
-
-也可以直接调用 Python：
+单卡全量跑一个模型：
 
 ```bash
 python code/01_labeling/build_when2tool_labels.py \
-  --model-alias qwen3-4b-instruct \
+  --model-alias qwen3-1.7b \
   --data-root ../tool_decision_neurons_data \
-  --backend vllm \
-  --tensor-parallel-size 4 \
+  --backend hf \
   --overwrite
+```
+
+### 单机八卡
+
+单机 8 卡跑全部 6 个模型：
+
+```bash
+BACKEND=vllm TENSOR_PARALLEL_SIZE=8 bash scripts/run_01_labeling_all.sh
+```
+
+单机 8 卡只跑指定模型：
+
+```bash
+MODEL_ALIASES="qwen3-32b llama3.3-70b" \
+BACKEND=vllm TENSOR_PARALLEL_SIZE=8 \
+bash scripts/run_01_labeling_all.sh
+```
+
+多机分块时，每台机器设置同一个 `NUM_SHARDS` 和不同的 `SHARD_INDEX`：
+
+```bash
+MODEL_ALIASES="llama3.3-70b" \
+NUM_SHARDS=4 SHARD_INDEX=0 \
+BACKEND=vllm TENSOR_PARALLEL_SIZE=8 \
+bash scripts/run_01_labeling_all.sh
 ```
 
 标签输出放在 `$DATA_ROOT/labels/`，每个模型一个文件夹，跑完后可以直接打包对应 `<model_alias>/` 发回。
@@ -348,6 +357,16 @@ $DATA_ROOT/
                 |-- summary.json
 ```
 
+如果使用 `NUM_SHARDS>1`，每个 split 下会多一层 shard 目录，例如：
+
+```text
+$DATA_ROOT/labels/<model_alias>/manifest_shard_00000_of_00004.json
+$DATA_ROOT/labels/<model_alias>/single_hop/train/shard_00000_of_00004/
+|-- labels.jsonl
+|-- no_tool_outputs.json
+|-- summary.json
+```
+
 `labels.jsonl` 每行是一条样本的标签，核心字段：
 
 | 字段 | 含义 |
@@ -357,6 +376,7 @@ $DATA_ROOT/
 | `id` / `sample_uid` | When2Tool 原始 id 和全局样本 id |
 | `env_name` / `difficulty` | 原始环境和难度 |
 | `task_type` | 根据 env 映射得到的 A/B/C，方便后续探测分组 |
+| `num_shards` / `shard_index` | 分块信息；不分块时为 `1` / `0` |
 | `model_answer_raw` | hard no-tool 模式下模型原始最终回答 |
 | `model_answer` | 从 `\boxed{...}` 里抽出的答案 |
 | `no_tool_correct` | no-tool 是否答对 |

@@ -80,10 +80,28 @@ def resolve_model_spec(
     alias_or_path: str,
     config_path: Optional[str] = None,
     prefer_local: bool = True,
+    allow_remote_download: bool = False,
 ) -> ModelSpec:
     models = load_model_config(config_path)
     key = normalize_model_alias(alias_or_path)
     if key not in models:
+        raw_path = Path(alias_or_path)
+        candidate = raw_path if raw_path.is_absolute() else (repo_root() / raw_path).resolve()
+        if candidate.exists():
+            return ModelSpec(
+                alias=candidate.name,
+                repo_id=alias_or_path,
+                local_path=alias_or_path,
+                resolved_path=str(candidate),
+                resolved_from_local=True,
+                enable_thinking="auto",
+            )
+        if not allow_remote_download:
+            raise FileNotFoundError(
+                f"Model path not found and remote download is disabled: {alias_or_path}. "
+                "Put the model under the repo sibling path in configs/models.yaml, "
+                "or pass an existing local --model-path."
+            )
         return ModelSpec(
             alias=Path(alias_or_path).name,
             repo_id=alias_or_path,
@@ -98,11 +116,15 @@ def resolve_model_spec(
     local_path = str(cfg.get("local_path") or repo_id)
     resolved = repo_id
     resolved_from_local = False
-    if prefer_local:
-        candidate = (repo_root() / local_path).resolve()
-        if candidate.exists():
-            resolved = str(candidate)
-            resolved_from_local = True
+    candidate = (repo_root() / local_path).resolve()
+    if prefer_local and candidate.exists():
+        resolved = str(candidate)
+        resolved_from_local = True
+    elif not allow_remote_download:
+        raise FileNotFoundError(
+            f"Local model directory not found for alias '{key}': {candidate}. "
+            "Remote Hugging Face download is disabled by default."
+        )
     return ModelSpec(
         alias=key,
         repo_id=repo_id,

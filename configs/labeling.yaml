@@ -15,8 +15,12 @@ labeling:
   reasoning_mode: no_reasoning
   max_rounds: 12
   max_new_tokens: 2048
+  batch_size: 0
   backend: hf
   tensor_parallel_size: 1
   max_model_len: 32768
   vllm_dtype: bfloat16
   enable_thinking: false
+  allow_remote_model_download: false
+  num_shards: 1
+  shard_index: 0
