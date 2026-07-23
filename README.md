@@ -304,7 +304,7 @@ conda activate tool_neurons
 bash scripts/run_01_labeling_all.sh
 ```
 
-默认 `run_01_labeling_all.sh` 使用 `BACKEND=vllm`、`TENSOR_PARALLEL_SIZE=1`。多卡机器上可以直接改环境变量：
+默认 `run_01_labeling_all.sh` 使用 `BACKEND=vllm`、`TENSOR_PARALLEL_SIZE=1`。标签脚本默认每轮把所有 active 样本一起送入生成，和 When2Tool 的 `evaluate_batched` 保持一致；如需单卡小批量调试，可以额外传 `--batch-size`。多卡机器上可以直接改环境变量：
 
 ```bash
 BACKEND=vllm TENSOR_PARALLEL_SIZE=4 bash scripts/run_01_labeling_all.sh

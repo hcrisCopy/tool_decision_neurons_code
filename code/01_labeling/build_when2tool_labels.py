@@ -52,6 +52,15 @@ SYSTEM_PROMPT_NATIVE = (
     "When you are done, provide the final answer in LaTeX boxed format: \\boxed{...}."
 )
 
+LIST_MANIPULATION_FORMAT_CONTRACT = (
+    "ListManipulation format contract:\n"
+    "1) There is no set_list tool. For every list-op call, you must provide values=<current list> explicitly.\n"
+    "2) For tool arguments, use plain lists [a,b,c] (1D) or [[...],[...]] (2D). Never use objects like {\"values\": [...]}.\n"
+    "3) At each step, parse current_list from the latest tool output, then call exactly one operation tool (append/remove/insert/sort/reverse).\n"
+    "4) Use one operation per tool call; do not batch multiple operations in one call.\n"
+    "5) For final answer, output exactly one plain list literal wrapped in box, e.g. \\boxed{[1, 2, 3]} or \\boxed{[[1, 2], [3, 4]]}; do NOT format it as LaTeX array/matrix.\n"
+)
+
 SUBSETS = ("single_hop", "multi_hop")
 SPLITS = ("train", "test")
 RAW_COLUMNS = (
@@ -79,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subsets", nargs="+", default=list(SUBSETS), choices=SUBSETS)
     parser.add_argument("--splits", nargs="+", default=list(SPLITS), choices=SPLITS)
     parser.add_argument("--backend", default="hf", choices=["hf", "vllm"])
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=0, help="0 means all active tasks per round, matching When2Tool evaluate_batched.")
     parser.add_argument("--max-samples", type=int, default=0, help="Demo/debug only. 0 means all samples.")
     parser.add_argument("--max-rounds", type=int, default=12)
     parser.add_argument("--max-new-tokens", type=int, default=2048)
@@ -508,12 +517,14 @@ def build_generator(model_path: str, args: argparse.Namespace) -> Any:
 
 
 def initial_state(task: Dict[str, Any], system_prompt: str, tool_format: str) -> Dict[str, Any]:
+    messages = [{"role": "system", "content": system_prompt}]
+    env_names = {env.get("name", "") for env in task.get("environments", []) if env.get("name", "")}
+    if "ListManipulationEnv" in env_names:
+        messages.append({"role": "system", "content": LIST_MANIPULATION_FORMAT_CONTRACT})
+    messages.append({"role": "user", "content": build_user_message(task["instruction"])})
     return {
         "task": deepcopy(task),
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": build_user_message(task["instruction"])},
-        ],
+        "messages": messages,
         "tools": build_tools_schema(task),
         "rounds": 0,
         "done": False,
@@ -609,11 +620,11 @@ def finalize_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def evaluate_hard_no_tool(tasks: List[Dict[str, Any]], generator: Any, args: argparse.Namespace, tool_format: str) -> List[Dict[str, Any]]:
     states = [initial_state(task, system_prompt_for(tool_format), tool_format) for task in tasks]
-    batch_size = max(1, int(args.batch_size))
     for round_idx in range(1, args.max_rounds + 1):
         active = [idx for idx, state in enumerate(states) if not state["done"] and state["rounds"] < args.max_rounds]
         if not active:
             break
+        batch_size = len(active) if int(args.batch_size) <= 0 else max(1, int(args.batch_size))
         for offset in range(0, len(active), batch_size):
             batch_indices = active[offset : offset + batch_size]
             messages_batch = [states[idx]["messages"] for idx in batch_indices]
