@@ -1,0 +1,22 @@
+data_root: ../tool_decision_neurons_data
+raw_dataset_dir: datasets/raw_when2tool
+output_dir: labels
+
+subsets:
+  - single_hop
+  - multi_hop
+
+splits:
+  - train
+  - test
+
+labeling:
+  prompt_mode: hard_no_tool
+  reasoning_mode: no_reasoning
+  max_rounds: 12
+  max_new_tokens: 2048
+  backend: hf
+  tensor_parallel_size: 1
+  max_model_len: 32768
+  vllm_dtype: bfloat16
+  enable_thinking: false

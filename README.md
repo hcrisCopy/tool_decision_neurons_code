@@ -67,6 +67,8 @@ tool_decision_neurons_code/
 |   |   |-- build_modified_when2tool.py    # 生成 modified_when2tool
 |   |   |-- README.md                      # 本阶段说明
 |   |-- 01_labeling/                       # 阶段 3：每个模型跑 tool_necessary 标签
+|   |   |-- build_when2tool_labels.py      # 对齐 When2Tool hard_no_tool 生成 0/1 标签
+|   |   |-- README.md                      # 本阶段说明
 |   |-- 02_feature_extraction/             # 阶段 4：提取隐藏状态和激活
 |   |-- 03_single_type_neuron_probing/     # 阶段 5：A/B/C 单类型神经元探测
 |   |-- 04_single_type_causal_validation/  # 阶段 6：单类型因果验证
@@ -76,10 +78,12 @@ tool_decision_neurons_code/
 |   |-- 08_evaluation/                     # 阶段 10：指标汇总和评测
 |   |-- third_party/                       # 第三方代码适配，不直接混入主逻辑
 |       |-- when2tool_adapter/             # When2Tool 原方法适配
+|       |   |-- env_schemas/                # When2Tool 官方工具 schema
 |       |-- ss_neuron_expansion_adapter/   # Who Transfers Safety? 方法适配
 |-- scripts/
     |-- run_00_build_modified_when2tool.sh # 一键生成改造后数据集
-    |-- run_01_labeling.sh                 # 后续补：一键跑标签
+    |-- run_01_labeling_demo.sh            # 单模型小样本 demo，检查环境和逻辑
+    |-- run_01_labeling_all.sh             # 6 个模型全量生成 0/1 标签
     |-- run_02_feature_extraction.sh       # 后续补：一键提特征
     |-- run_03_single_type_neuron_probing.sh
     |-- run_04_single_type_causal_validation.sh
@@ -230,7 +234,21 @@ A/B/C 映射：
 
 ## 阶段 3：标签生成
 
-待补充。
+本阶段对齐 When2Tool 原方法，用原始 When2Tool 数据集生成每个模型自己的 `tool_necessary=0/1` 标签。
+
+注意：这里输入是 `$DATA_ROOT/datasets/raw_when2tool/`，不是 `$DATA_ROOT/datasets/modified_when2tool/`。
+
+标签定义：
+
+```text
+prompt_mode = hard_no_tool
+reasoning_mode = no_reasoning
+
+tool_necessary = 0, 如果模型在不能使用工具时答对
+tool_necessary = 1, 如果模型在不能使用工具时答错
+```
+
+这和 When2Tool Step 2 / `extract_features.py` 的标签收集逻辑一致：先跑 hard no-tool evaluation，再用 final answer 是否正确得到 no-tool label。
 
 需要覆盖的模型：
 
@@ -243,15 +261,106 @@ llama3.1-8b
 llama3.3-70b
 ```
 
-标签输出放在 `$DATA_ROOT/labels/`。
+相关代码：
+
+| 文件 | 作用 |
+|---|---|
+| `code/01_labeling/build_when2tool_labels.py` | 核心标签生成脚本 |
+| `code/01_labeling/README.md` | 本阶段说明 |
+| `code/third_party/when2tool_adapter/env_schemas/*.json` | When2Tool 官方工具 schema，用于构造模型看到的 tools |
+| `code/common/model_registry.py` | 解析 6 个模型 alias、repo_id 和本地相对路径 |
+| `configs/models.yaml` | 6 个模型的路径配置 |
+| `configs/labeling.yaml` | 标签阶段默认配置记录 |
+| `scripts/run_01_labeling_demo.sh` | 单模型小样本 demo |
+| `scripts/run_01_labeling_all.sh` | 6 模型全量标签脚本 |
+
+单模型 demo：
+
+```bash
+conda activate tool_neurons
+bash scripts/run_01_labeling_demo.sh qwen3-1.7b
+```
+
+默认只跑 `single_hop/train` 前 5 条，用来检查环境、模型路径、chat template 和输出格式。可以通过环境变量改：
+
+```bash
+MAX_SAMPLES=20 BACKEND=hf bash scripts/run_01_labeling_demo.sh qwen3-1.7b
+```
+
+只检查原始数据和工具 schema，不加载模型：
+
+```bash
+python code/01_labeling/build_when2tool_labels.py \
+  --data-root ../tool_decision_neurons_data \
+  --check-data-only
+```
+
+全量跑 6 个模型：
+
+```bash
+conda activate tool_neurons
+bash scripts/run_01_labeling_all.sh
+```
+
+默认 `run_01_labeling_all.sh` 使用 `BACKEND=vllm`、`TENSOR_PARALLEL_SIZE=1`。多卡机器上可以直接改环境变量：
+
+```bash
+BACKEND=vllm TENSOR_PARALLEL_SIZE=4 bash scripts/run_01_labeling_all.sh
+```
+
+也可以直接调用 Python：
+
+```bash
+python code/01_labeling/build_when2tool_labels.py \
+  --model-alias qwen3-4b-instruct \
+  --data-root ../tool_decision_neurons_data \
+  --backend vllm \
+  --tensor-parallel-size 4 \
+  --overwrite
+```
+
+标签输出放在 `$DATA_ROOT/labels/`，每个模型一个文件夹，跑完后可以直接打包对应 `<model_alias>/` 发回。
 
 ```text
 $DATA_ROOT/
 |-- labels/
     |-- <model_alias>/
+        |-- manifest.json
         |-- single_hop/
+        |   |-- train/
+        |   |   |-- labels.jsonl
+        |   |   |-- no_tool_outputs.json
+        |   |   |-- summary.json
+        |   |-- test/
+        |       |-- labels.jsonl
+        |       |-- no_tool_outputs.json
+        |       |-- summary.json
         |-- multi_hop/
+            |-- train/
+            |   |-- labels.jsonl
+            |   |-- no_tool_outputs.json
+            |   |-- summary.json
+            |-- test/
+                |-- labels.jsonl
+                |-- no_tool_outputs.json
+                |-- summary.json
 ```
+
+`labels.jsonl` 每行是一条样本的标签，核心字段：
+
+| 字段 | 含义 |
+|---|---|
+| `model_alias` | 当前模型 |
+| `subset` / `split` | `single_hop` 或 `multi_hop`，`train` 或 `test` |
+| `id` / `sample_uid` | When2Tool 原始 id 和全局样本 id |
+| `env_name` / `difficulty` | 原始环境和难度 |
+| `task_type` | 根据 env 映射得到的 A/B/C，方便后续探测分组 |
+| `model_answer_raw` | hard no-tool 模式下模型原始最终回答 |
+| `model_answer` | 从 `\boxed{...}` 里抽出的答案 |
+| `no_tool_correct` | no-tool 是否答对 |
+| `tool_necessary` | 最终 0/1 标签 |
+
+`no_tool_outputs.json` 保存 When2Tool 风格的 hard no-tool 运行轨迹，主要用于检查模型到底是直接答了、被拒绝了工具调用，还是超过轮数没答出来。
 
 ## 阶段 4：特征和激活提取
 
