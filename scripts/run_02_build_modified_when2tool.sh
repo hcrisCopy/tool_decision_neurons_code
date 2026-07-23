@@ -6,7 +6,11 @@ CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${CODE_ROOT}"
 
 DATA_ROOT="${DATA_ROOT:-../tool_decision_neurons_data}"
+MODEL_ALIASES="${MODEL_ALIASES:-all}"
 
-python code/00_dataset_preparation/build_modified_when2tool.py \
+read -r -a MODELS <<< "${MODEL_ALIASES}"
+
+python code/02_dataset_preparation/build_modified_when2tool.py \
   --data-root "${DATA_ROOT}" \
+  --model-aliases "${MODELS[@]}" \
   --overwrite

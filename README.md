@@ -6,9 +6,9 @@
 
 - [ ] 搭建 GitHub 代码仓库目录
 - [ ] 准备原始 When2Tool 数据集
-- [ ] 构建改造后的 When2Tool 数据集
 - [ ] 下载目标模型到项目同级目录
 - [ ] 为所有目标模型分别生成 `tool_necessary=0/1` 标签
+- [ ] 基于标签构建改造后的 When2Tool 数据集
 - [ ] 提取模型隐藏状态、激活和干预所需中间结果
 - [ ] 探测 A/B/C 单类型工具决策神经元
 - [ ] 做单类型因果验证
@@ -23,8 +23,8 @@
 - [数据和模型资源](#数据和模型资源)
 - [阶段 0：环境配置](#阶段-0环境配置)
 - [阶段 1：原始数据准备](#阶段-1原始数据准备)
-- [阶段 2：改造后数据集构建](#阶段-2改造后数据集构建)
-- [阶段 3：标签生成](#阶段-3标签生成)
+- [阶段 2：标签生成](#阶段-2标签生成)
+- [阶段 3：改造后数据集构建](#阶段-3改造后数据集构建)
 - [阶段 4：特征和激活提取](#阶段-4特征和激活提取)
 - [阶段 5：单类型神经元探测](#阶段-5单类型神经元探测)
 - [阶段 6：单类型因果验证](#阶段-6单类型因果验证)
@@ -63,34 +63,34 @@ tool_decision_neurons_code/
 |   |   |-- paths.py                       # 后续补：统一路径解析
 |   |   |-- metrics.py                     # 后续补：When2Tool 指标
 |   |   |-- io_utils.py                    # 后续补：JSONL/parquet 读写
-|   |-- 00_dataset_preparation/            # 阶段 2：改造原始数据集，只加类型映射
-|   |   |-- build_modified_when2tool.py    # 生成 modified_when2tool
-|   |   |-- README.md                      # 本阶段说明
-|   |-- 01_labeling/                       # 阶段 3：每个模型跑 tool_necessary 标签
+|   |-- 01_labeling/                       # 阶段 2：每个模型跑 tool_necessary 标签
 |   |   |-- build_when2tool_labels.py      # 对齐 When2Tool hard_no_tool 生成 0/1 标签
 |   |   |-- README.md                      # 本阶段说明
-|   |-- 02_feature_extraction/             # 阶段 4：提取隐藏状态和激活
-|   |-- 03_single_type_neuron_probing/     # 阶段 5：A/B/C 单类型神经元探测
-|   |-- 04_single_type_causal_validation/  # 阶段 6：单类型因果验证
-|   |-- 05_shared_neuron_discovery/        # 阶段 7：A/B/C 交集共享神经元
-|   |-- 06_cross_type_causal_validation/   # 阶段 8：跨类型因果验证
-|   |-- 07_training/                       # 阶段 9：神经元训练
-|   |-- 08_evaluation/                     # 阶段 10：指标汇总和评测
+|   |-- 02_dataset_preparation/            # 阶段 3：基于标签构建改造后数据集
+|   |   |-- build_modified_when2tool.py    # 合并 raw 样本、A/B/C 映射和 0/1 标签
+|   |   |-- README.md                      # 本阶段说明
+|   |-- 03_feature_extraction/             # 阶段 4：提取隐藏状态和激活
+|   |-- 04_single_type_neuron_probing/     # 阶段 5：A/B/C 单类型神经元探测
+|   |-- 05_single_type_causal_validation/  # 阶段 6：单类型因果验证
+|   |-- 06_shared_neuron_discovery/        # 阶段 7：A/B/C 交集共享神经元
+|   |-- 07_cross_type_causal_validation/   # 阶段 8：跨类型因果验证
+|   |-- 08_training/                       # 阶段 9：神经元训练
+|   |-- 09_evaluation/                     # 阶段 10：指标汇总和评测
 |   |-- third_party/                       # 第三方代码适配，不直接混入主逻辑
 |       |-- when2tool_adapter/             # When2Tool 原方法适配
 |       |   |-- env_schemas/                # When2Tool 官方工具 schema
 |       |-- ss_neuron_expansion_adapter/   # Who Transfers Safety? 方法适配
 |-- scripts/
-    |-- run_00_build_modified_when2tool.sh # 一键生成改造后数据集
     |-- run_01_labeling_demo.sh            # 单模型小样本 demo，检查环境和逻辑
     |-- run_01_labeling_all.sh             # 6 个模型全量生成 0/1 标签
-    |-- run_02_feature_extraction.sh       # 后续补：一键提特征
-    |-- run_03_single_type_neuron_probing.sh
-    |-- run_04_single_type_causal_validation.sh
-    |-- run_05_shared_neuron_discovery.sh
-    |-- run_06_cross_type_causal_validation.sh
-    |-- run_07_training.sh
-    |-- run_08_evaluation.sh
+    |-- run_02_build_modified_when2tool.sh # 基于标签生成改造后数据集
+    |-- run_03_feature_extraction.sh       # 后续补：一键提特征
+    |-- run_04_single_type_neuron_probing.sh
+    |-- run_05_single_type_causal_validation.sh
+    |-- run_06_shared_neuron_discovery.sh
+    |-- run_07_cross_type_causal_validation.sh
+    |-- run_08_training.sh
+    |-- run_09_evaluation.sh
 ```
 
 默认路径约定：
@@ -116,8 +116,8 @@ MODEL_ROOT=..
 |---|---|---|---|---|---|
 | When2Tool 原始数据 | dataset | Hugging Face | https://huggingface.co/datasets/cesun/When2Tool | `$DATA_ROOT/datasets/raw_when2tool/` | 原始 single-hop / multi-hop 数据 |
 | When2Tool 代码 | code | GitHub | https://github.com/Trustworthy-ML-Lab/when2tool | `code/third_party/when2tool_adapter/` | 标签生成和指标对齐参考 |
-| 改造后 When2Tool 数据 | processed dataset | 由原始 When2Tool 生成 | 百度网盘链接待补充 | `$DATA_ROOT/datasets/modified_when2tool/` | 按 env 映射 A/B/C 后的实验输入 |
 | 模型标签结果 | generated labels | 本项目生成 | 随实验输出交接 | `$DATA_ROOT/labels/<model_alias>/` | 每个模型自己的 `tool_necessary=0/1` 标签 |
+| 改造后 When2Tool 数据 | processed dataset | 由原始 When2Tool + 模型标签生成 | 百度网盘链接待补充 | `$DATA_ROOT/datasets/modified_when2tool/<model_alias>/` | 后续探测、因果验证、训练使用 |
 
 ### 模型
 
@@ -184,59 +184,11 @@ When2Tool 原始数据划分：
 id, difficulty, multi_step, instruction, env_name, tools, parameters, answer, steps, tags
 ```
 
-## 阶段 2：改造后数据集构建
-
-本阶段只做种类映射：根据 `env_name` 给每条样本加上 A/B/C 任务类型。不会生成 `tool_necessary`，不会修改 `instruction/tools/answer`，不会删除样本，也不会做模型相关处理。
-
-运行命令：
-
-```bash
-conda activate tool_neurons
-bash scripts/run_00_build_modified_when2tool.sh
-```
-
-A/B/C 映射：
-
-| task_type | When2Tool 类别 | env_name |
-|---|---|---|
-| `A` | Computational Scale | `CalculatorEnv`, `StatisticsEnv`, `CountingEnv`, `MatrixEnv`, `PrimeEnv` |
-| `B` | Knowledge Boundaries | `RetrieverEnv`, `HistoricalYearEnv`, `GameRuleEnv`, `HashEnv`, `DecodingEnv` |
-| `C` | Execution Reliability | `ListManipulationEnv`, `DateTimeEnv`, `CodeExecutorEnv`, `ScheduleEnv`, `RegexMatchEnv` |
-
-改造后样本新增字段：
-
-| 字段 | 含义 | 是否来自 When2Tool 原始字段 |
-|---|---|---|
-| `source_dataset` | 数据来源，固定为 `When2Tool` | 否，本项目新增 |
-| `subset` | `single_hop` 或 `multi_hop` | 否，本项目新增 |
-| `split` | `train` 或 `test` | 否，本项目新增 |
-| `sample_uid` | 全局唯一样本 id，格式为 `subset:split:original_id` | 否，本项目新增 |
-| `original_id` | 原始 When2Tool 的 `id` 备份 | 否，本项目新增 |
-| `task_type` | A/B/C 任务类型 | 否，本项目新增 |
-| `task_type_name` | A/B/C 的英文类别名 | 否，本项目新增 |
-| `when2tool_category` | When2Tool 原论文中的类别名 | 否，本项目新增 |
-
-阶段二输出：
-
-| 输出 | 位置 | 作用 |
-|---|---|---|
-| 改造后 single-hop train | `$DATA_ROOT/datasets/modified_when2tool/single_hop/train.jsonl` 和 `.parquet` | 保留原始样本，额外加 A/B/C 映射字段 |
-| 改造后 single-hop test | `$DATA_ROOT/datasets/modified_when2tool/single_hop/test.jsonl` 和 `.parquet` | 后续标签生成、探测、验证使用 |
-| 改造后 multi-hop train | `$DATA_ROOT/datasets/modified_when2tool/multi_hop/train.jsonl` 和 `.parquet` | 多跳训练 split |
-| 改造后 multi-hop test | `$DATA_ROOT/datasets/modified_when2tool/multi_hop/test.jsonl` 和 `.parquet` | 多跳测试 split |
-| 映射文件 | `$DATA_ROOT/datasets/modified_when2tool/env_type_mapping.json` | 记录 `env_name -> A/B/C` |
-| 汇总表 | `$DATA_ROOT/datasets/modified_when2tool/summary.csv` | 按 subset/split/task_type/env/difficulty 统计数量 |
-| manifest | `$DATA_ROOT/datasets/modified_when2tool/manifest.json` | 记录输入输出路径、字段和样本数量 |
-| 数据说明 | `$DATA_ROOT/datasets/modified_when2tool/README.md` | 改造后数据集说明 |
-| 网盘交接占位 | `$DATA_ROOT/datasets/modified_when2tool/baidu_netdisk_info.md` | 后续补百度网盘链接和提取码 |
-
-说明：之前生成过的 `by_type/` 目录只是按 `task_type` 复制出来的快捷分组，不是新数据。现在脚本已经取消生成 `by_type/`，后续如果要拿 A/B/C 数据，直接读取 train/test 后按 `task_type` 字段筛选即可。
-
-## 阶段 3：标签生成
+## 阶段 2：标签生成
 
 本阶段对齐 When2Tool 原方法，用原始 When2Tool 数据集生成每个模型自己的 `tool_necessary=0/1` 标签。
 
-注意：这里输入是 `$DATA_ROOT/datasets/raw_when2tool/`，不是 `$DATA_ROOT/datasets/modified_when2tool/`。
+注意：这里输入是 `$DATA_ROOT/datasets/raw_when2tool/`。先跑标签，再进入阶段 3 构建改造后数据集。
 
 标签定义：
 
@@ -384,6 +336,77 @@ $DATA_ROOT/labels/<model_alias>/single_hop/train/shard_00000_of_00004/
 
 `no_tool_outputs.json` 保存 When2Tool 风格的 hard no-tool 运行轨迹，主要用于检查模型到底是直接答了、被拒绝了工具调用，还是超过轮数没答出来。
 
+## 阶段 3：改造后数据集构建
+
+本阶段在标签产物已经拿到之后运行。它把原始 When2Tool 样本、A/B/C 种类映射、对应模型的 `tool_necessary=0/1` 标签合并成每个模型自己的改造后数据集。
+
+相关代码：
+
+| 文件 | 作用 |
+|---|---|
+| `code/02_dataset_preparation/build_modified_when2tool.py` | 合并 raw 样本、A/B/C 映射和模型标签 |
+| `code/02_dataset_preparation/README.md` | 本阶段说明 |
+| `code/common/env_type_mapping.py` | `env_name -> A/B/C` 映射 |
+| `scripts/run_02_build_modified_when2tool.sh` | 一键构建改造后数据集 |
+
+输入：
+
+```text
+$DATA_ROOT/datasets/raw_when2tool/
+$DATA_ROOT/labels/<model_alias>/
+```
+
+运行全部已返回标签的模型：
+
+```bash
+conda activate tool_neurons
+bash scripts/run_02_build_modified_when2tool.sh
+```
+
+只运行指定模型：
+
+```bash
+MODEL_ALIASES="qwen3-1.7b llama3.1-8b" bash scripts/run_02_build_modified_when2tool.sh
+```
+
+输出：
+
+```text
+$DATA_ROOT/datasets/modified_when2tool/
+|-- manifest.json
+|-- env_type_mapping.json
+|-- baidu_netdisk_info.md
+|-- <model_alias>/
+    |-- manifest.json
+    |-- label_coverage.csv
+    |-- summary.csv
+    |-- env_type_mapping.json
+    |-- single_hop/
+    |   |-- train.jsonl
+    |   |-- train.parquet
+    |   |-- test.jsonl
+    |   |-- test.parquet
+    |-- multi_hop/
+        |-- train.jsonl
+        |-- train.parquet
+        |-- test.jsonl
+        |-- test.parquet
+```
+
+改造后样本核心新增字段：
+
+| 字段 | 含义 |
+|---|---|
+| `sample_uid` | 全局样本 id，格式为 `subset:split:original_id` |
+| `task_type` / `task_type_name` | A/B/C 任务类型 |
+| `when2tool_category` | When2Tool 对应任务类别 |
+| `model_alias` | 标签所属模型 |
+| `tool_necessary` | 模型自己的 0/1 标签 |
+| `no_tool_correct` | hard no-tool 是否答对 |
+| `model_answer_raw` / `model_answer` | no-tool 原始回答和抽取答案 |
+
+默认要求每个 split 标签完整覆盖原始数据；如果只想用少量样本调试，可加 `--max-samples` 和 `--allow-partial` 直接调用 Python 脚本。
+
 ## 阶段 4：特征和激活提取
 
 待补充。
@@ -499,15 +522,15 @@ llama3.3-70b
 代码阶段目录固定使用：
 
 ```text
-00_dataset_preparation
 01_labeling
-02_feature_extraction
-03_single_type_neuron_probing
-04_single_type_causal_validation
-05_shared_neuron_discovery
-06_cross_type_causal_validation
-07_training
-08_evaluation
+02_dataset_preparation
+03_feature_extraction
+04_single_type_neuron_probing
+05_single_type_causal_validation
+06_shared_neuron_discovery
+07_cross_type_causal_validation
+08_training
+09_evaluation
 ```
 
 每个阶段输出建议包含：
