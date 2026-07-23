@@ -43,46 +43,50 @@
 
 ```text
 tool_decision_neurons_code/
-|-- README.md
-|-- .gitignore
-|-- requirements.txt
-|-- configs/
-|   |-- paths.yaml
-|   |-- models.yaml
-|   |-- data.yaml
-|   |-- labeling.yaml
-|   |-- probing.yaml
-|   |-- causal_single.yaml
-|   |-- causal_cross.yaml
-|   |-- training.yaml
-|   |-- evaluation.yaml
+|-- README.md                              # 项目总说明，GitHub 首页入口
+|-- .gitignore                             # 排除缓存、日志、数据、ckpt 等大文件
+|-- requirements.txt                       # Python 依赖；torch 单独安装
+|-- configs/                               # 后续各阶段配置文件
+|   |-- paths.yaml                         # DATA_ROOT / MODEL_ROOT 等路径配置
+|   |-- models.yaml                        # 目标模型 repo_id、alias、推理参数
+|   |-- data.yaml                          # 数据集 split 和字段配置
+|   |-- labeling.yaml                      # 跑 tool_necessary 标签配置
+|   |-- probing.yaml                       # 神经元探测配置
+|   |-- causal_single.yaml                 # 单类型因果验证配置
+|   |-- causal_cross.yaml                  # 跨类型因果验证配置
+|   |-- training.yaml                      # 神经元训练配置
+|   |-- evaluation.yaml                    # When2Tool 对齐评测配置
 |-- code/
-|   |-- common/
-|   |   |-- env_type_mapping.py
-|   |   |-- model_registry.py
-|   |   |-- paths.py
-|   |   |-- metrics.py
-|   |   |-- io_utils.py
-|   |-- 00_labeling/
-|   |-- 01_feature_extraction/
-|   |-- 02_single_type_neuron_probing/
-|   |-- 03_single_type_causal_validation/
-|   |-- 04_shared_neuron_discovery/
-|   |-- 05_cross_type_causal_validation/
-|   |-- 06_training/
-|   |-- 07_evaluation/
-|   |-- third_party/
-|       |-- when2tool_adapter/
-|       |-- ss_neuron_expansion_adapter/
+|   |-- common/                            # 公共工具代码
+|   |   |-- env_type_mapping.py            # When2Tool env_name 到 A/B/C 的映射
+|   |   |-- model_registry.py              # 后续补：模型 alias 和路径管理
+|   |   |-- paths.py                       # 后续补：统一路径解析
+|   |   |-- metrics.py                     # 后续补：When2Tool 指标
+|   |   |-- io_utils.py                    # 后续补：JSONL/parquet 读写
+|   |-- 00_dataset_preparation/            # 阶段 2：改造原始数据集，只加类型映射
+|   |   |-- build_modified_when2tool.py    # 生成 modified_when2tool
+|   |   |-- README.md                      # 本阶段说明
+|   |-- 01_labeling/                       # 阶段 3：每个模型跑 tool_necessary 标签
+|   |-- 02_feature_extraction/             # 阶段 4：提取隐藏状态和激活
+|   |-- 03_single_type_neuron_probing/     # 阶段 5：A/B/C 单类型神经元探测
+|   |-- 04_single_type_causal_validation/  # 阶段 6：单类型因果验证
+|   |-- 05_shared_neuron_discovery/        # 阶段 7：A/B/C 交集共享神经元
+|   |-- 06_cross_type_causal_validation/   # 阶段 8：跨类型因果验证
+|   |-- 07_training/                       # 阶段 9：神经元训练
+|   |-- 08_evaluation/                     # 阶段 10：指标汇总和评测
+|   |-- third_party/                       # 第三方代码适配，不直接混入主逻辑
+|       |-- when2tool_adapter/             # When2Tool 原方法适配
+|       |-- ss_neuron_expansion_adapter/   # Who Transfers Safety? 方法适配
 |-- scripts/
-    |-- run_00_labeling.sh
-    |-- run_01_feature_extraction.sh
-    |-- run_02_single_type_neuron_probing.sh
-    |-- run_03_single_type_causal_validation.sh
-    |-- run_04_shared_neuron_discovery.sh
-    |-- run_05_cross_type_causal_validation.sh
-    |-- run_06_training.sh
-    |-- run_07_evaluation.sh
+    |-- run_00_build_modified_when2tool.sh # 一键生成改造后数据集
+    |-- run_01_labeling.sh                 # 后续补：一键跑标签
+    |-- run_02_feature_extraction.sh       # 后续补：一键提特征
+    |-- run_03_single_type_neuron_probing.sh
+    |-- run_04_single_type_causal_validation.sh
+    |-- run_05_shared_neuron_discovery.sh
+    |-- run_06_cross_type_causal_validation.sh
+    |-- run_07_training.sh
+    |-- run_08_evaluation.sh
 ```
 
 默认路径约定：
@@ -97,6 +101,7 @@ MODEL_ROOT=..
 
 - GitHub 只同步 `tool_decision_neurons_code/`。
 - 代码里不要硬编码个人电脑路径，所有数据和模型位置从配置文件或命令行参数传入。
+- `tool_decision_neurons_data/` 和模型权重目录与代码仓库同级，不提交 GitHub。
 - 每个模型的实验输出必须放在自己的 `<model_alias>/` 目录下，避免不同模型互相覆盖。
 
 ## 数据和模型资源
@@ -146,58 +151,82 @@ python -c "import transformers, datasets, vllm; print(transformers.__version__)"
 
 ## 阶段 1：原始数据准备
 
-待补充。
-
-When2Tool 原始数据放在 `$DATA_ROOT/datasets/raw_when2tool/`，不提交到 GitHub。
+When2Tool 原始数据放在 `$DATA_ROOT/datasets/raw_when2tool/`，不提交到 GitHub。本阶段只确认原始数据存在，不改字段、不生成标签。
 
 ```text
 $DATA_ROOT/
 |-- datasets/
     |-- raw_when2tool/
         |-- single_hop/
-        |   |-- train.*
-        |   |-- test.*
+        |   |-- train-*.parquet
+        |   |-- test-*.parquet
         |-- multi_hop/
-            |-- train.*
-            |-- test.*
+            |-- train-*.parquet
+            |-- test-*.parquet
 ```
 
-When2Tool 数据划分：
+When2Tool 原始数据划分：
 
-| subset | split | 数量 | 推荐放置路径 |
-|---|---|---:|---|
-| `single_hop` | train | 900 | `$DATA_ROOT/datasets/raw_when2tool/single_hop/train.*` |
-| `single_hop` | test | 2250 | `$DATA_ROOT/datasets/raw_when2tool/single_hop/test.*` |
-| `multi_hop` | train | 180 | `$DATA_ROOT/datasets/raw_when2tool/multi_hop/train.*` |
-| `multi_hop` | test | 450 | `$DATA_ROOT/datasets/raw_when2tool/multi_hop/test.*` |
+| subset | split | 数量 | 原始文件位置 | 说明 |
+|---|---|---:|---|---|
+| `single_hop` | train | 900 | `$DATA_ROOT/datasets/raw_when2tool/single_hop/train-*.parquet` | 单跳训练集 |
+| `single_hop` | test | 2250 | `$DATA_ROOT/datasets/raw_when2tool/single_hop/test-*.parquet` | 单跳测试集 |
+| `multi_hop` | train | 180 | `$DATA_ROOT/datasets/raw_when2tool/multi_hop/train-*.parquet` | 多跳训练集 |
+| `multi_hop` | test | 450 | `$DATA_ROOT/datasets/raw_when2tool/multi_hop/test-*.parquet` | 多跳测试集 |
+
+原始字段：
+
+```text
+id, difficulty, multi_step, instruction, env_name, tools, parameters, answer, steps, tags
+```
 
 ## 阶段 2：改造后数据集构建
 
-待补充。
+本阶段只做种类映射：根据 `env_name` 给每条样本加上 A/B/C 任务类型。不会生成 `tool_necessary`，不会修改 `instruction/tools/answer`，不会删除样本，也不会做模型相关处理。
 
-改造后数据集放在 `$DATA_ROOT/datasets/modified_when2tool/`，后续可以通过百度网盘和对方交接。
+运行命令：
 
-```text
-$DATA_ROOT/
-|-- datasets/
-    |-- modified_when2tool/
-        |-- README.md
-        |-- baidu_netdisk_info.md
-        |-- single_hop/
-        |-- multi_hop/
+```bash
+conda activate tool_neurons
+bash scripts/run_00_build_modified_when2tool.sh
 ```
 
-`baidu_netdisk_info.md` 里补充：
+A/B/C 映射：
 
-```text
-资源名称：
-百度网盘链接：
-提取码：
-压缩包文件名：
-解压目标目录：$DATA_ROOT/datasets/modified_when2tool/
-解压后应看到的文件：
-用途：
-```
+| task_type | When2Tool 类别 | env_name |
+|---|---|---|
+| `A` | Computational Scale | `CalculatorEnv`, `StatisticsEnv`, `CountingEnv`, `MatrixEnv`, `PrimeEnv` |
+| `B` | Knowledge Boundaries | `RetrieverEnv`, `HistoricalYearEnv`, `GameRuleEnv`, `HashEnv`, `DecodingEnv` |
+| `C` | Execution Reliability | `ListManipulationEnv`, `DateTimeEnv`, `CodeExecutorEnv`, `ScheduleEnv`, `RegexMatchEnv` |
+
+改造后样本新增字段：
+
+| 字段 | 含义 | 是否来自 When2Tool 原始字段 |
+|---|---|---|
+| `source_dataset` | 数据来源，固定为 `When2Tool` | 否，本项目新增 |
+| `subset` | `single_hop` 或 `multi_hop` | 否，本项目新增 |
+| `split` | `train` 或 `test` | 否，本项目新增 |
+| `sample_uid` | 全局唯一样本 id，格式为 `subset:split:original_id` | 否，本项目新增 |
+| `original_id` | 原始 When2Tool 的 `id` 备份 | 否，本项目新增 |
+| `task_type` | A/B/C 任务类型 | 否，本项目新增 |
+| `task_type_name` | A/B/C 的英文类别名 | 否，本项目新增 |
+| `when2tool_category` | When2Tool 原论文中的类别名 | 否，本项目新增 |
+
+阶段二输出：
+
+| 输出 | 位置 | 作用 |
+|---|---|---|
+| 改造后 single-hop train | `$DATA_ROOT/datasets/modified_when2tool/single_hop/train.jsonl` 和 `.parquet` | 保留原始样本，额外加 A/B/C 映射字段 |
+| 改造后 single-hop test | `$DATA_ROOT/datasets/modified_when2tool/single_hop/test.jsonl` 和 `.parquet` | 后续标签生成、探测、验证使用 |
+| 改造后 multi-hop train | `$DATA_ROOT/datasets/modified_when2tool/multi_hop/train.jsonl` 和 `.parquet` | 多跳训练 split |
+| 改造后 multi-hop test | `$DATA_ROOT/datasets/modified_when2tool/multi_hop/test.jsonl` 和 `.parquet` | 多跳测试 split |
+| 映射文件 | `$DATA_ROOT/datasets/modified_when2tool/env_type_mapping.json` | 记录 `env_name -> A/B/C` |
+| 汇总表 | `$DATA_ROOT/datasets/modified_when2tool/summary.csv` | 按 subset/split/task_type/env/difficulty 统计数量 |
+| manifest | `$DATA_ROOT/datasets/modified_when2tool/manifest.json` | 记录输入输出路径、字段和样本数量 |
+| 数据说明 | `$DATA_ROOT/datasets/modified_when2tool/README.md` | 改造后数据集说明 |
+| 网盘交接占位 | `$DATA_ROOT/datasets/modified_when2tool/baidu_netdisk_info.md` | 后续补百度网盘链接和提取码 |
+
+说明：之前生成过的 `by_type/` 目录只是按 `task_type` 复制出来的快捷分组，不是新数据。现在脚本已经取消生成 `by_type/`，后续如果要拿 A/B/C 数据，直接读取 train/test 后按 `task_type` 字段筛选即可。
 
 ## 阶段 3：标签生成
 
@@ -339,14 +368,15 @@ llama3.3-70b
 代码阶段目录固定使用：
 
 ```text
-00_labeling
-01_feature_extraction
-02_single_type_neuron_probing
-03_single_type_causal_validation
-04_shared_neuron_discovery
-05_cross_type_causal_validation
-06_training
-07_evaluation
+00_dataset_preparation
+01_labeling
+02_feature_extraction
+03_single_type_neuron_probing
+04_single_type_causal_validation
+05_shared_neuron_discovery
+06_cross_type_causal_validation
+07_training
+08_evaluation
 ```
 
 每个阶段输出建议包含：

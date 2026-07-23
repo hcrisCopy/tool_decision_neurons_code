@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.so
+
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.venv/
+venv/
+
+*.log
+*.tmp
+
+# Large files and experiment artifacts should live in ../tool_decision_neurons_data.
+data/
+datasets/
+outputs/
+logs/
+checkpoints/
+visualizations/
+wandb/
+
+# Local machine metadata.
+.DS_Store
+Thumbs.db
