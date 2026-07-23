@@ -59,10 +59,9 @@ tool_decision_neurons_code/
 |-- code/
 |   |-- common/                            # 公共工具代码
 |   |   |-- env_type_mapping.py            # When2Tool env_name 到 A/B/C 的映射
-|   |   |-- model_registry.py              # 后续补：模型 alias 和路径管理
-|   |   |-- paths.py                       # 后续补：统一路径解析
-|   |   |-- metrics.py                     # 后续补：When2Tool 指标
-|   |   |-- io_utils.py                    # 后续补：JSONL/parquet 读写
+|   |   |-- model_registry.py              # 模型 alias、repo_id 和本地相对路径
+|   |   |-- io_utils.py                    # JSON / JSONL / CSV 等读写
+|   |   |-- causal_plots.py                # 阶段 6/8 的因果验证图表
 |   |-- 01_labeling/                       # 阶段 2：每个模型跑 tool_necessary 标签
 |   |   |-- build_when2tool_labels.py      # 对齐 When2Tool hard_no_tool 生成 0/1 标签
 |   |   |-- README.md                      # 本阶段说明
@@ -70,27 +69,27 @@ tool_decision_neurons_code/
 |   |   |-- build_modified_when2tool.py    # 合并 raw 样本、A/B/C 映射和 0/1 标签
 |   |   |-- README.md                      # 本阶段说明
 |   |-- 03_feature_extraction/             # 阶段 4：提取隐藏状态和激活
+|   |   |-- extract_features.py            # 生成 Stage 5 所需 z_m(x) 和激活文件
 |   |-- 04_single_type_neuron_probing/     # 阶段 5：A/B/C 单类型神经元探测
+|   |   |-- probe_single_type_neurons.py   # 按 WTS 去激活重要性探测 TDN
 |   |-- 05_single_type_causal_validation/  # 阶段 6：单类型因果验证
+|   |   |-- run_single_type_causal_validation.py
 |   |-- 06_shared_neuron_discovery/        # 阶段 7：A/B/C 交集共享神经元
+|   |   |-- discover_shared_neurons.py
 |   |-- 07_cross_type_causal_validation/   # 阶段 8：跨类型因果验证
+|   |   |-- run_cross_type_causal_validation.py
 |   |-- 08_training/                       # 阶段 9：神经元训练
+|   |   |-- train_shared_neurons.py
 |   |-- 09_evaluation/                     # 阶段 10：指标汇总和评测
+|   |   |-- evaluate_training_summary.py
 |   |-- third_party/                       # 第三方代码适配，不直接混入主逻辑
 |       |-- when2tool_adapter/             # When2Tool 原方法适配
-|       |   |-- env_schemas/                # When2Tool 官方工具 schema
-|       |-- ss_neuron_expansion_adapter/   # Who Transfers Safety? 方法适配
+|       |   |-- env_schemas/                # 阶段 2 复用的工具 schema
+|       |   |-- envs/                       # When2Tool 官方工具环境和 schema，阶段 6/8/10 调工具用
 |-- scripts/
     |-- run_01_labeling_demo.sh            # 单模型小样本 demo，检查环境和逻辑
     |-- run_01_labeling_all.sh             # 6 个模型全量生成 0/1 标签
     |-- run_02_build_modified_when2tool.sh # 基于标签生成改造后数据集
-    |-- run_03_feature_extraction.sh       # 后续补：一键提特征
-    |-- run_04_single_type_neuron_probing.sh
-    |-- run_05_single_type_causal_validation.sh
-    |-- run_06_shared_neuron_discovery.sh
-    |-- run_07_cross_type_causal_validation.sh
-    |-- run_08_training.sh
-    |-- run_09_evaluation.sh
 ```
 
 默认路径约定：
@@ -409,101 +408,317 @@ $DATA_ROOT/datasets/modified_when2tool/
 
 ## 阶段 4：特征和激活提取
 
-待补充。
+本阶段读取阶段 3 的改造后数据集，按 When2Tool current / no_reasoning 格式构造 prompt，保存 Who Transfers Safety? 后续探测需要的最后 token 表示 `z_m(x)`，同时保存 Q/K/V/O 投影激活用于审计和候选维度检查。
 
-特征和激活输出放在 `$DATA_ROOT/features/`。
+单跳和多跳都提取，train/test 都保存；阶段 5 只会使用 train split。
+
+```bash
+python code/03_feature_extraction/extract_features.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
+  --output-dir ../tool_decision_neurons_data/features \
+  --subsets single_hop multi_hop \
+  --splits train test \
+  --torch-dtype bfloat16 \
+  --device-map auto \
+  --enable-thinking auto \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- features/
-    |-- <model_alias>/
-        |-- single_hop/
-        |-- multi_hop/
+$DATA_ROOT/features/<model_alias>/
+|-- manifest.json
+|-- single_hop/
+|   |-- train/
+|   |   |-- activations.pt
+|   |   |-- meta.jsonl
+|   |   |-- summary.json
+|   |-- test/
+|       |-- activations.pt
+|       |-- meta.jsonl
+|       |-- summary.json
+|-- multi_hop/
+    |-- train/
+    |-- test/
 ```
 
 ## 阶段 5：单类型神经元探测
 
-待补充。
+本阶段只用 train split 探测神经元，并且 single_hop / multi_hop 分开探测。
 
-A/B/C 单类型神经元结果放在 `$DATA_ROOT/neurons/<model_alias>/single_type/`。
+神经元定义直接对齐 Who Transfers Safety?：`N=(layer, matrix, index)`，`matrix` 属于 `Q/K/V/O`。Q/K/V 神经元对应 `W_Q/W_K/W_V` 的行，O 神经元对应 `W_O` 的列。重要性用去激活前后的最后 token 表示差计算，A/B/C 每类分别得到 `TDN_c = top(tool_necessary=1) - top(tool_necessary=0)`。
+
+```bash
+python code/04_single_type_neuron_probing/probe_single_type_neurons.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --feature-dir ../tool_decision_neurons_data/features/qwen3-4b-instruct \
+  --output-dir ../tool_decision_neurons_data/neurons \
+  --subsets single_hop multi_hop \
+  --probe-splits train \
+  --separate-subsets \
+  --top-p 0.03 \
+  --deactivation-batch-size 1 \
+  --torch-dtype bfloat16 \
+  --device-map auto \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- neurons/
-    |-- <model_alias>/
-        |-- single_type/
-            |-- A/
-            |-- B/
-            |-- C/
+$DATA_ROOT/neurons/<model_alias>/single_type_by_subset/
+|-- manifest.json
+|-- single_hop/
+|   |-- manifest.json
+|   |-- A/
+|   |   |-- TDN_neurons.jsonl
+|   |   |-- S1_top_neurons.jsonl
+|   |   |-- S0_top_neurons.jsonl
+|   |   |-- scores_and_masks.pt
+|   |   |-- summary.json
+|   |-- B/
+|   |-- C/
+|-- multi_hop/
+    |-- A/
+    |-- B/
+    |-- C/
 ```
 
 ## 阶段 6：单类型因果验证
 
-待补充。
+本阶段使用阶段 5 在 train split 探测出的 A/B/C 单类型神经元，在 test split 上做因果验证。single_hop / multi_hop 分开评测。
 
-单类型因果验证结果放在 `$DATA_ROOT/causal_validation/<model_alias>/single_type/`。
+对每个任务类型分别跑 `Base`、`M-Random`、`M-TDN_c`。指标对齐 When2Tool 风格：`Acc`、`TC`、`AvgTC`、`TCR`，同时保存工具决策相关的 `ToolAcc`、`ToolNecessaryAcc`、`NoToolAcc`、`OverCall`。
+
+```bash
+python code/05_single_type_causal_validation/run_single_type_causal_validation.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
+  --neuron-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
+  --output-dir ../tool_decision_neurons_data/causal_validation \
+  --subsets single_hop multi_hop \
+  --split test \
+  --separate-subsets \
+  --max-rounds 10 \
+  --max-new-tokens 2048 \
+  --record-mode lite \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- causal_validation/
-    |-- <model_alias>/
-        |-- single_type/
+$DATA_ROOT/causal_validation/<model_alias>/single_type_by_subset/
+|-- manifest.json
+|-- summary_table.csv
+|-- summary.md
+|-- single_hop/
+|   |-- summary_table.csv
+|   |-- summary.md
+|   |-- figures/
+|   |   |-- metric_bars.png
+|   |   |-- delta_from_base.png
+|   |   |-- tdn_count_vs_causal_effect.png
+|   |   |-- tdn_heatmap.png
+|   |   |-- plot_manifest.json
+|   |-- A/
+|   |   |-- Base/per_task.jsonl
+|   |   |-- M-Random/per_task.jsonl
+|   |   |-- M-TDN_A/per_task.jsonl
+|   |-- B/
+|   |-- C/
+|-- multi_hop/
 ```
 
 ## 阶段 7：共享神经元发现
 
-待补充。
+本阶段读取阶段 5 的 A/B/C 单类型 TDN，按 Who Transfers Safety? 的交集思想找跨任务类型共享神经元：每层做 `TDN_A,l ∩ TDN_B,l ∩ TDN_C,l`，再对所有层取并集。交集按完整神经元身份 `(layer, matrix, index)` 精确匹配，不做占位或替代。
 
-A/B/C 交集得到的跨类型共享神经元放在 `$DATA_ROOT/neurons/<model_alias>/shared/`。
+```bash
+python code/06_shared_neuron_discovery/discover_shared_neurons.py \
+  --model-alias qwen3-4b-instruct \
+  --data-root ../tool_decision_neurons_data \
+  --single-type-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
+  --causal-dir ../tool_decision_neurons_data/causal_validation/qwen3-4b-instruct/single_type_by_subset \
+  --output-dir ../tool_decision_neurons_data/neurons \
+  --make-figures \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- neurons/
-    |-- <model_alias>/
-        |-- shared/
+$DATA_ROOT/neurons/<model_alias>/shared_by_subset/
+|-- manifest.json
+|-- shared_summary.csv
+|-- single_hop/
+|   |-- CTD_neurons.jsonl
+|   |-- pairwise_AB_neurons.jsonl
+|   |-- pairwise_AC_neurons.jsonl
+|   |-- pairwise_BC_neurons.jsonl
+|   |-- private_A_neurons.jsonl
+|   |-- private_B_neurons.jsonl
+|   |-- private_C_neurons.jsonl
+|   |-- layer_counts.csv
+|   |-- matrix_counts.csv
+|   |-- share_rates.csv
+|   |-- manifest.json
+|-- multi_hop/
+```
+
+图输出到：
+
+```text
+$DATA_ROOT/visualizations/<model_alias>/shared_by_subset/
+|-- fig4_shared_abundance_vs_capability.png
+|-- fig_shared_neuron_heatmap.png
+|-- fig4_share_rate_vs_type_capability_single_hop.png
+|-- fig4_share_rate_vs_type_capability_multi_hop.png
+|-- summary.md
+|-- manifest.json
 ```
 
 ## 阶段 8：跨类型因果验证
 
-待补充。
+本阶段使用阶段 7 的共享神经元，在 test split 上做跨类型因果验证。single_hop / multi_hop 分开评测。
 
-跨类型因果验证结果放在 `$DATA_ROOT/causal_validation/<model_alias>/cross_type/`。
+每个任务类型跑 `Base`、`M-Random`、`M-CTD`、`M-Private_c`。`M-Private_c` 是该类型单类型 TDN 去掉共享 CTD 后的私有神经元，用来验证真正跨类型负责的是共享神经元。
+
+```bash
+python code/07_cross_type_causal_validation/run_cross_type_causal_validation.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
+  --shared-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/shared_by_subset \
+  --single-type-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
+  --output-dir ../tool_decision_neurons_data/causal_validation \
+  --subsets single_hop multi_hop \
+  --split test \
+  --max-rounds 10 \
+  --max-new-tokens 2048 \
+  --record-mode lite \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- causal_validation/
-    |-- <model_alias>/
-        |-- cross_type/
+$DATA_ROOT/causal_validation/<model_alias>/cross_type_by_subset/
+|-- manifest.json
+|-- summary_table.csv
+|-- cross_type_effects.csv
+|-- summary.md
+|-- figures/
+|   |-- cross_type_effects_by_subset.png
+|   |-- plot_manifest.json
+|-- single_hop/
+|   |-- summary_table.csv
+|   |-- cross_type_effects.csv
+|   |-- summary.md
+|   |-- figures/
+|   |   |-- cross_type_metric_bars.png
+|   |   |-- cross_type_delta_from_base.png
+|   |   |-- ctd_heatmap.png
+|   |   |-- plot_manifest.json
+|   |-- A/
+|   |   |-- Base/per_task.jsonl
+|   |   |-- M-Random/per_task.jsonl
+|   |   |-- M-CTD/per_task.jsonl
+|   |   |-- M-Private_A/per_task.jsonl
+|   |-- B/
+|   |-- C/
+|-- multi_hop/
 ```
 
 ## 阶段 9：神经元训练
 
-待补充。
+本阶段只训练阶段 7 找到的 CTD 共享神经元参数。训练数据来自阶段 3 的 train split，single_hop / multi_hop 分开训练并分别保存 delta checkpoint。
 
-训练数据和训练 ckpt 放在 `$DATA_ROOT/training_data/` 与 `$DATA_ROOT/checkpoints/`。
+训练方式对齐 Who Transfers Safety? 的神经元训练思想：冻结普通参数，只给 CTD 对应的 Q/K/V 行和 O 列保留梯度；loss 是 assistant token 的自回归交叉熵，system/user/tool_response token 不计入 loss。
+
+训练轨迹按改造后数据集的 `tool_necessary` 构造：`0` 类样本监督 no-tool 直接最终答案，`1` 类样本用 When2Tool 官方 env 构造工具可用的 tool call、tool response、final answer 轨迹。解析失败的样本写入 `skipped_examples.jsonl`，不混入 loss。
+
+```bash
+python code/08_training/train_shared_neurons.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
+  --shared-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/shared_by_subset \
+  --output-dir ../tool_decision_neurons_data/training \
+  --subsets single_hop multi_hop \
+  --split train \
+  --epochs 3 \
+  --per-device-train-batch-size 1 \
+  --gradient-accumulation-steps 16 \
+  --learning-rate 5e-5 \
+  --warmup-ratio 0.03 \
+  --max-length 2048 \
+  --torch-dtype bfloat16 \
+  --device-map auto \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- training_data/
-|   |-- <model_alias>/
-|-- checkpoints/
-    |-- <model_alias>/
+$DATA_ROOT/training/<model_alias>/neuron_training_by_subset/
+|-- manifest.json
+|-- single_hop/
+|   |-- ctd_neuron_delta.pt
+|   |-- training_log.csv
+|   |-- training_examples.jsonl
+|   |-- skipped_examples.jsonl
+|   |-- trainable_mask_summary.json
+|   |-- manifest.json
+|   |-- summary.md
+|-- multi_hop/
 ```
 
 ## 阶段 10：评测和汇总
 
-待补充。
+本阶段加载阶段 9 的 CTD delta checkpoint，在 test split 上重新评测，并和阶段 8 的 `Base` 结果汇总对比。指标继续对齐 When2Tool：`Acc`、`TC`、`AvgTC`、`TCR`，并保留工具决策指标 `ToolAcc`、`ToolNecessaryAcc`、`NoToolAcc`。`AUROC` 在本阶段没有额外 probe 分数时记为 `NA`。
 
-最终评测输出、日志和图表分别放在 `$DATA_ROOT/outputs/`、`$DATA_ROOT/logs/`、`$DATA_ROOT/visualizations/`。
+```bash
+python code/09_evaluation/evaluate_training_summary.py \
+  --model-alias qwen3-4b-instruct \
+  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
+  --training-dir ../tool_decision_neurons_data/training/qwen3-4b-instruct/neuron_training_by_subset \
+  --default-eval-dir ../tool_decision_neurons_data/causal_validation/qwen3-4b-instruct/cross_type_by_subset \
+  --output-dir ../tool_decision_neurons_data/outputs \
+  --subsets single_hop multi_hop \
+  --split test \
+  --max-rounds 10 \
+  --max-new-tokens 2048 \
+  --record-mode lite \
+  --overwrite
+```
+
+输出：
 
 ```text
-$DATA_ROOT/
-|-- outputs/
-|   |-- <model_alias>/
-|-- logs/
-|   |-- <model_alias>/
-|-- visualizations/
-    |-- <model_alias>/
+$DATA_ROOT/outputs/<model_alias>/training_summary_by_subset/
+|-- manifest.json
+|-- summary.md
+|-- training_comparison_by_type.csv
+|-- training_comparison_summary.csv
+|-- training_delta_summary.csv
+|-- applied_delta_summary.json
+|-- all_per_task.jsonl
+|-- single_hop/
+|   |-- A/
+|   |   |-- CTD-training/
+|   |       |-- per_task.jsonl
+|   |       |-- outputs.json
+|   |       |-- summary.json
+|   |-- B/
+|   |-- C/
+|-- multi_hop/
 ```
 
 ## 命名规范
