@@ -109,27 +109,95 @@ MODEL_ROOT=..
 
 ## 数据和模型资源
 
+下面命令默认对方已经克隆本仓库，并位于：
+
+```text
+.../tool_decision_neurons_code/
+```
+
+也就是从代码仓库根目录执行所有下载命令。数据和模型都放在代码仓库同级目录，不提交 GitHub。
+
 ### 数据集
 
-| 名称 | 类型 | 来源 | 下载或交接地址 | 推荐放置路径 | 用途 |
-|---|---|---|---|---|---|
-| When2Tool 原始数据 | dataset | Hugging Face | https://huggingface.co/datasets/cesun/When2Tool | `$DATA_ROOT/datasets/raw_when2tool/` | 原始 single-hop / multi-hop 数据 |
-| When2Tool 代码 | code | GitHub | https://github.com/Trustworthy-ML-Lab/when2tool | `code/third_party/when2tool_adapter/` | 标签生成和指标对齐参考 |
-| 模型标签结果 | generated labels | 本项目生成 | 随实验输出交接 | `$DATA_ROOT/labels/<model_alias>/` | 每个模型自己的 `tool_necessary=0/1` 标签 |
-| 改造后 When2Tool 数据 | processed dataset | 由原始 When2Tool + 模型标签生成 | 百度网盘链接待补充 | `$DATA_ROOT/datasets/modified_when2tool/<model_alias>/` | 后续探测、因果验证、训练使用 |
+这里只下载 When2Tool 原始数据集。后续的标签、改造后数据集、神经元、因果验证结果、训练 ckpt 都由本项目代码生成，不在这里下载。
+
+```bash
+pip install -U huggingface_hub
+
+mkdir -p ../tool_decision_neurons_data/datasets/raw_when2tool
+hf download cesun/When2Tool \
+  --repo-type dataset \
+  --local-dir ../tool_decision_neurons_data/datasets/raw_when2tool
+```
+
+这里 `--local-dir` 已经把下载目录命名为 `raw_when2tool`。如果是手动下载或从别处拷贝数据，最后也要整理成这个目录名。
+
+国内网络如果 Hugging Face 较慢，可以临时加镜像：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+hf download cesun/When2Tool \
+  --repo-type dataset \
+  --local-dir ../tool_decision_neurons_data/datasets/raw_when2tool
+```
+
+下载完成后应看到：
+
+```text
+../tool_decision_neurons_data/datasets/raw_when2tool/
+|-- single_hop/
+|   |-- train-*.parquet
+|   |-- test-*.parquet
+|-- multi_hop/
+    |-- train-*.parquet
+    |-- test-*.parquet
+```
 
 ### 模型
 
-模型权重不放 GitHub，也不放进代码仓库。直接按 Hugging Face repo_id 的两级目录放在代码仓库同级位置，例如 `Qwen/Qwen3-4B-Instruct-2507` 对应 `$MODEL_ROOT/Qwen/Qwen3-4B-Instruct-2507/`。
+模型权重直接用 ModelScope 下载到代码仓库同级目录，保持 Hugging Face 风格的两级路径。后续 README 命令里的 `--model-path` 就按这些路径填写。
 
-| 模型 alias | Hugging Face repo_id | 下载地址 | 推荐放置路径 | 备注 |
-|---|---|---|---|---|
-| `qwen3-1.7b` | `Qwen/Qwen3-1.7B` | https://huggingface.co/Qwen/Qwen3-1.7B | `$MODEL_ROOT/Qwen/Qwen3-1.7B/` | Qwen3 dense model |
-| `qwen3-4b-instruct` | `Qwen/Qwen3-4B-Instruct-2507` | https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507 | `$MODEL_ROOT/Qwen/Qwen3-4B-Instruct-2507/` | instruct model |
-| `qwen3-14b` | `Qwen/Qwen3-14B` | https://huggingface.co/Qwen/Qwen3-14B | `$MODEL_ROOT/Qwen/Qwen3-14B/` | Qwen3 dense model |
-| `qwen3-32b` | `Qwen/Qwen3-32B` | https://huggingface.co/Qwen/Qwen3-32B | `$MODEL_ROOT/Qwen/Qwen3-32B/` | Qwen3 dense model |
-| `llama3.1-8b` | `meta-llama/Llama-3.1-8B-Instruct` | https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct | `$MODEL_ROOT/meta-llama/Llama-3.1-8B-Instruct/` | 需要确认 HF 访问权限 |
-| `llama3.3-70b` | `meta-llama/Llama-3.3-70B-Instruct` | https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct | `$MODEL_ROOT/meta-llama/Llama-3.3-70B-Instruct/` | 需要确认 HF 访问权限 |
+```bash
+pip install -U modelscope
+
+mkdir -p ../Qwen ../meta-llama
+
+# Qwen3
+modelscope download --model Qwen/Qwen3-1.7B \
+  --local_dir ../Qwen/Qwen3-1.7B
+
+modelscope download --model Qwen/Qwen3-4B-Instruct-2507 \
+  --local_dir ../Qwen/Qwen3-4B-Instruct-2507
+
+modelscope download --model Qwen/Qwen3-14B \
+  --local_dir ../Qwen/Qwen3-14B
+
+modelscope download --model Qwen/Qwen3-32B \
+  --local_dir ../Qwen/Qwen3-32B
+
+# Llama Instruct
+modelscope download --model LLM-Research/Meta-Llama-3.1-8B-Instruct \
+  --local_dir ../meta-llama/Llama-3.1-8B-Instruct
+
+modelscope download --model LLM-Research/Llama-3.3-70B-Instruct \
+  --local_dir ../meta-llama/Llama-3.3-70B-Instruct
+```
+
+这里每个 `--local_dir` 都是后续代码直接使用的最终模型目录，不需要再改名。
+
+下载完成后的目录应是：
+
+```text
+../Qwen/
+|-- Qwen3-1.7B/
+|-- Qwen3-4B-Instruct-2507/
+|-- Qwen3-14B/
+|-- Qwen3-32B/
+
+../meta-llama/
+|-- Llama-3.1-8B-Instruct/
+|-- Llama-3.3-70B-Instruct/
+```
 
 ## 阶段 0：环境配置
 
