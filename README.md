@@ -164,23 +164,23 @@ mkdir -p ../Qwen ../meta-llama
 
 # Qwen3
 modelscope download --model Qwen/Qwen3-1.7B \
-  --local_dir ../Qwen/Qwen3-1.7B
+  --local_dir ../Qwen/qwen3-1.7b
 
 modelscope download --model Qwen/Qwen3-4B-Instruct-2507 \
-  --local_dir ../Qwen/Qwen3-4B-Instruct-2507
+  --local_dir ../Qwen/qwen3-4b-instruct
 
 modelscope download --model Qwen/Qwen3-14B \
-  --local_dir ../Qwen/Qwen3-14B
+  --local_dir ../Qwen/qwen3-14b
 
 modelscope download --model Qwen/Qwen3-32B \
-  --local_dir ../Qwen/Qwen3-32B
+  --local_dir ../Qwen/qwen3-32b
 
 # Llama Instruct
 modelscope download --model LLM-Research/Meta-Llama-3.1-8B-Instruct \
-  --local_dir ../meta-llama/Llama-3.1-8B-Instruct
+  --local_dir ../meta-llama/llama3.1-8b
 
 modelscope download --model LLM-Research/Llama-3.3-70B-Instruct \
-  --local_dir ../meta-llama/Llama-3.3-70B-Instruct
+  --local_dir ../meta-llama/llama3.3-70b
 ```
 
 这里每个 `--local_dir` 都是后续代码直接使用的最终模型目录，不需要再改名。
@@ -189,14 +189,14 @@ modelscope download --model LLM-Research/Llama-3.3-70B-Instruct \
 
 ```text
 ../Qwen/
-|-- Qwen3-1.7B/
-|-- Qwen3-4B-Instruct-2507/
-|-- Qwen3-14B/
-|-- Qwen3-32B/
+|-- qwen3-1.7b/
+|-- qwen3-4b-instruct/
+|-- qwen3-14b/
+|-- qwen3-32b/
 
 ../meta-llama/
-|-- Llama-3.1-8B-Instruct/
-|-- Llama-3.3-70B-Instruct/
+|-- llama3.1-8b/
+|-- llama3.3-70b/
 ```
 
 ## 阶段 0：环境配置
@@ -280,7 +280,7 @@ llama3.1-8b
 llama3.3-70b
 ```
 
-模型加载使用 Hugging Face Transformers / vLLM 的官方通用接口。Qwen3 普通模型在 `configs/models.yaml` 里显式设置 `enable_thinking: "false"`，用于对齐本阶段的 no reasoning 标签收集；`Qwen3-4B-Instruct-2507` 官方本身是 non-thinking instruct 模型，因此配置为 `auto`，不额外传 thinking 开关；Llama Instruct 模型也不传 Qwen 专用参数。
+模型加载使用 Hugging Face Transformers / vLLM 的官方通用接口。Qwen3 普通模型在 `configs/models.yaml` 里显式设置 `enable_thinking: "false"`，用于对齐本阶段的 no reasoning 标签收集；`qwen3-4b-instruct` 对应的官方 instruct 模型本身是 non-thinking 模型，因此配置为 `auto`，不额外传 thinking 开关；Llama Instruct 模型也不传 Qwen 专用参数。
 
 相关代码：
 
@@ -483,7 +483,7 @@ $DATA_ROOT/datasets/modified_when2tool/
 ```bash
 python code/03_feature_extraction/extract_features.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --output-dir ../tool_decision_neurons_data/features \
   --subsets single_hop multi_hop \
@@ -522,7 +522,7 @@ $DATA_ROOT/features/<model_alias>/
 ```bash
 python code/04_single_type_neuron_probing/probe_single_type_neurons.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --feature-dir ../tool_decision_neurons_data/features/qwen3-4b-instruct \
   --output-dir ../tool_decision_neurons_data/neurons \
   --subsets single_hop multi_hop \
@@ -565,7 +565,7 @@ $DATA_ROOT/neurons/<model_alias>/single_type_by_subset/
 ```bash
 python code/05_single_type_causal_validation/run_single_type_causal_validation.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --neuron-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
   --output-dir ../tool_decision_neurons_data/causal_validation \
@@ -660,7 +660,7 @@ $DATA_ROOT/visualizations/<model_alias>/shared_by_subset/
 ```bash
 python code/07_cross_type_causal_validation/run_cross_type_causal_validation.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --shared-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/shared_by_subset \
   --single-type-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
@@ -714,7 +714,7 @@ $DATA_ROOT/causal_validation/<model_alias>/cross_type_by_subset/
 ```bash
 python code/08_training/train_shared_neurons.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --shared-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/shared_by_subset \
   --output-dir ../tool_decision_neurons_data/training \
@@ -754,7 +754,7 @@ $DATA_ROOT/training/<model_alias>/neuron_training_by_subset/
 ```bash
 python code/09_evaluation/evaluate_training_summary.py \
   --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/Qwen3-4B-Instruct-2507 \
+  --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --training-dir ../tool_decision_neurons_data/training/qwen3-4b-instruct/neuron_training_by_subset \
   --default-eval-dir ../tool_decision_neurons_data/causal_validation/qwen3-4b-instruct/cross_type_by_subset \
