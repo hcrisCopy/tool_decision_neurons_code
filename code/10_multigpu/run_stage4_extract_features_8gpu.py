@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-devices", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--enable-thinking", default="model", choices=["model", "auto", "true", "false"])
+    parser.add_argument("--enable-thinking", default="false", choices=["model", "auto", "true", "false"])
     parser.add_argument("--keep-shards", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--worker", action="store_true")

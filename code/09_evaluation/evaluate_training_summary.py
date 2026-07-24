@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-tasks-per-type", type=int, default=0)
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--enable-thinking", default="auto", choices=["auto", "true", "false"])
+    parser.add_argument("--enable-thinking", default="false", choices=["auto", "true", "false"])
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)

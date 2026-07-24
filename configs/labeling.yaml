@@ -16,7 +16,7 @@ labeling:
   max_rounds: 12
   max_new_tokens: 2048
   batch_size: 0
-  backend: hf
+  backend: vllm
   tensor_parallel_size: 1
   max_model_len: 32768
   vllm_dtype: bfloat16

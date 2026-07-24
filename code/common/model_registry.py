@@ -18,7 +18,7 @@ DEFAULT_MODELS: Dict[str, Dict[str, str]] = {
     "qwen3-4b-instruct": {
         "repo_id": "Qwen/Qwen3-4B-Instruct-2507",
         "local_path": "../Qwen/qwen3-4b-instruct",
-        "enable_thinking": "auto",
+        "enable_thinking": "false",
     },
     "qwen3-14b": {
         "repo_id": "Qwen/Qwen3-14B",
@@ -33,12 +33,12 @@ DEFAULT_MODELS: Dict[str, Dict[str, str]] = {
     "llama3.1-8b": {
         "repo_id": "meta-llama/Llama-3.1-8B-Instruct",
         "local_path": "../meta-llama/llama3.1-8b",
-        "enable_thinking": "auto",
+        "enable_thinking": "false",
     },
     "llama3.3-70b": {
         "repo_id": "meta-llama/Llama-3.3-70B-Instruct",
         "local_path": "../meta-llama/llama3.3-70b",
-        "enable_thinking": "auto",
+        "enable_thinking": "false",
     },
 }
 

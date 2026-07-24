@@ -131,6 +131,12 @@ modelscope download --model LLM-Research/Meta-Llama-3.1-8B-Instruct --local_dir 
 modelscope download --model LLM-Research/Llama-3.3-70B-Instruct --local_dir ../meta-llama/llama3.3-70b
 ```
 
+后续阶段统一通过模型标签读取 `configs/models.yaml` 中的本地路径；切换模型时只改这一行：
+
+```bash
+MODEL_ALIAS=qwen3-4b-instruct
+```
+
 ## 阶段 1：原始数据准备
 
 输入：
@@ -153,14 +159,18 @@ tool_necessary = 1  表示模型无工具条件下答错，因此该样本对该
 示例命令：
 
 ```bash
+MODEL_ALIAS=qwen3-4b-instruct
+
 python code/01_labeling/build_when2tool_labels.py \
-  --model-alias qwen3-4b-instruct \
-  --model-path ../Qwen/qwen3-4b-instruct \
+  --model-alias ${MODEL_ALIAS} \
   --data-root ../tool_decision_neurons_data \
   --subsets single_hop multi_hop \
   --splits train test \
+  --backend vllm \
+  --tensor-parallel-size 8 \
   --torch-dtype bfloat16 \
-  --device-map auto
+  --device-map auto \
+  --enable-thinking false
 ```
 
 输出：
@@ -218,7 +228,7 @@ python code/10_multigpu/run_stage4_extract_features_8gpu.py \
   --cuda-devices 0,1,2,3,4,5,6,7 \
   --torch-dtype bfloat16 \
   --device-map auto \
-  --enable-thinking model
+  --enable-thinking false
 ```
 
 多卡方式：按样本行 round-robin 分成 8 个 shard，每张卡一个 worker，最后合并回正式 split 目录。若目标 split 已有完整 `activations.pt/meta.jsonl/summary.json`，默认提前跳过；需要重跑时加 `--overwrite`。
@@ -327,7 +337,8 @@ python code/10_multigpu/run_stage6_single_type_causal_validation_8gpu.py \
   --cuda-devices 0,1,2,3,4,5,6,7 \
   --max-rounds 10 \
   --max-new-tokens 2048 \
-  --record-mode lite
+  --record-mode lite \
+  --enable-thinking false
 ```
 
 多卡方式：按 `subset × task_type × intervention` 拆成 18 个单卡 worker，最多同时跑 8 个。每个 worker 只写一个 intervention 目录，全部完成后自动 refresh 生成汇总表和图。每个 intervention 会额外保存 `runner_meta.json`，记录当前 Stage 5 subset manifest 的 hash；中断后重跑时，只有文件完整且 hash 一致的 unit 会跳过。旧版本产物、半成品、依赖神经元已变化的产物都会在重跑前自动清理。
@@ -430,7 +441,8 @@ python code/10_multigpu/run_stage8_cross_type_causal_validation_8gpu.py \
   --cuda-devices 0,1,2,3,4,5,6,7 \
   --max-rounds 10 \
   --max-new-tokens 2048 \
-  --record-mode lite
+  --record-mode lite \
+  --enable-thinking false
 ```
 
 多卡方式：按 `subset × task_type × intervention` 拆成 24 个单卡 worker，最多同时跑 8 个。全部完成后自动 refresh 汇总表格和图。每个 intervention 会额外保存 `runner_meta.json`，记录当前 Stage 7 shared manifest 和 Stage 5 single-type manifest 的 hash；中断后重跑时，只有文件完整且依赖 hash 一致的 unit 会跳过。旧版本产物、半成品、依赖已变化的产物都会在重跑前自动清理。
@@ -484,7 +496,7 @@ python code/10_multigpu/run_stage9_train_shared_neurons_8gpu.py \
   --max-length 2048 \
   --torch-dtype bfloat16 \
   --device-map auto \
-  --enable-thinking model
+  --enable-thinking false
 ```
 
 说明：single_hop / multi_hop 是两个独立训练目标。该阶段不能像 Stage 5 那样把 CTD 神经元切成 8 份分别训练再合并，否则训练目标不等价。已有完整 subset checkpoint 时默认提前跳过。
@@ -524,7 +536,7 @@ python code/10_multigpu/run_stage10_evaluate_training_summary_8gpu.py \
   --max-rounds 10 \
   --max-new-tokens 2048 \
   --record-mode lite \
-  --enable-thinking model
+  --enable-thinking false
 ```
 
 输出：

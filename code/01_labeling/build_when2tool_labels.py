@@ -89,7 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--splits", nargs="+", default=list(SPLITS), choices=SPLITS)
     parser.add_argument("--num-shards", type=int, default=1, help="Split each raw split into N round-robin shards for multi-machine runs.")
     parser.add_argument("--shard-index", type=int, default=0, help="Current shard index, 0-based.")
-    parser.add_argument("--backend", default="hf", choices=["hf", "vllm"])
+    parser.add_argument("--backend", default="vllm", choices=["hf", "vllm"])
     parser.add_argument("--batch-size", type=int, default=0, help="0 means all active tasks per round, matching When2Tool evaluate_batched.")
     parser.add_argument("--max-samples", type=int, default=0, help="Demo/debug only. 0 means all samples.")
     parser.add_argument("--max-rounds", type=int, default=12)
@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vllm-dtype", default="bfloat16")
     parser.add_argument(
         "--enable-thinking",
-        default="auto",
+        default="false",
         choices=["auto", "true", "false"],
         help="Override model config. auto means use configs/models.yaml and omit the kwarg when the model config is also auto.",
     )

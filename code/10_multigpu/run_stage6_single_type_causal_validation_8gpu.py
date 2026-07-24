@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=20260723)
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--enable-thinking", default="model", choices=["model", "auto", "true", "false"])
+    parser.add_argument("--enable-thinking", default="false", choices=["model", "auto", "true", "false"])
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
