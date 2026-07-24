@@ -24,7 +24,9 @@ SPLIT_FILES = ("activations.pt", "meta.jsonl", "summary.json")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-alias", default="qwen3-4b-instruct")
-    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--model-path", default="", help="Optional. Defaults to configs/models.yaml by --model-alias.")
+    parser.add_argument("--models-config", default=None)
+    parser.add_argument("--allow-remote-model-download", action="store_true")
     parser.add_argument("--modified-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--subsets", nargs="+", default=list(SUBSETS), choices=SUBSETS)
@@ -33,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cuda-devices", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--enable-thinking", default="auto", choices=["auto", "true", "false"])
+    parser.add_argument("--enable-thinking", default="model", choices=["model", "auto", "true", "false"])
     parser.add_argument("--keep-shards", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--worker", action="store_true")
@@ -225,6 +227,7 @@ def run_parent(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    mgpu.resolve_model_args(args)
     if args.worker:
         run_worker(args)
     else:

@@ -26,7 +26,9 @@ EXPECTED_ROOT_STAGE = "stage5_single_type_neuron_probing_by_subset_candidate_sha
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-alias", default="qwen3-4b-instruct")
-    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--model-path", default="", help="Optional. Defaults to configs/models.yaml by --model-alias.")
+    parser.add_argument("--models-config", default=None)
+    parser.add_argument("--allow-remote-model-download", action="store_true")
     parser.add_argument("--feature-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--subsets", nargs="+", default=list(SUBSETS), choices=SUBSETS)
@@ -193,6 +195,7 @@ def merge_outputs(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    mgpu.resolve_model_args(args)
     if stage_complete(args) and not args.overwrite:
         print(f"[skip] stage 5 already complete: {final_root(args)}", flush=True)
         return

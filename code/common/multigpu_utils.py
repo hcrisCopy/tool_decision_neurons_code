@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from common.model_registry import load_model_config, normalize_model_alias, resolve_model_spec
+
 
 @dataclass
 class Job:
@@ -68,6 +70,33 @@ def effective_device_map(requested: str, cuda_device: Optional[str]) -> str:
     if str(requested).lower() == "auto" and device_count(cuda_device) > 1:
         return "balanced"
     return str(requested)
+
+
+def resolve_model_args(args: Any) -> None:
+    model_path = str(getattr(args, "model_path", "") or "").strip()
+    alias = str(getattr(args, "model_alias", "") or "").strip()
+    if not alias:
+        raise ValueError("--model-alias must not be empty.")
+    config_path = getattr(args, "models_config", None)
+    allow_remote = bool(getattr(args, "allow_remote_model_download", False))
+    spec = resolve_model_spec(
+        model_path or alias,
+        config_path=config_path,
+        prefer_local=True,
+        allow_remote_download=allow_remote,
+    )
+    alias_cfg = load_model_config(config_path).get(normalize_model_alias(alias), {})
+    config_enable_thinking = str(alias_cfg.get("enable_thinking") or spec.enable_thinking)
+    args.model_path = spec.resolved_path
+    args.model_repo_id = spec.repo_id
+    args.model_config_enable_thinking = config_enable_thinking
+    if hasattr(args, "enable_thinking") and str(args.enable_thinking) == "model":
+        args.enable_thinking = config_enable_thinking
+    print(
+        f"[model] alias={alias} path={args.model_path} "
+        f"enable_thinking={getattr(args, 'enable_thinking', 'NA')}",
+        flush=True,
+    )
 
 
 def run_jobs(jobs: Sequence[Job], max_parallel: int) -> None:
