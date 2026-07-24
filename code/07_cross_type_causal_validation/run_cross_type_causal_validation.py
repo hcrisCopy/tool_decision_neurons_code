@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--record-mode", default="lite", choices=["lite", "full", "off"])
+    parser.add_argument(
+        "--interventions",
+        nargs="+",
+        default=[],
+        help="Optional worker filter. Use Base, M-Random, M-CTD, M-Private, or concrete names such as M-Private_A.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--refresh-existing",
@@ -67,6 +73,15 @@ def parse_args() -> argparse.Namespace:
         help="Recompute tables/manifests from existing per_task.jsonl files without loading the model.",
     )
     return parser.parse_args()
+
+
+def intervention_selected(requested: List[str], task_type: str, intervention: str) -> bool:
+    if not requested:
+        return True
+    aliases = {intervention}
+    if intervention == f"M-Private_{task_type}":
+        aliases.update({"M-Private", "M-Private_c"})
+    return bool(set(requested) & aliases)
 
 
 def read_json(path: Path) -> Dict[str, Any]:
@@ -293,6 +308,8 @@ def run_subset(
             (f"M-Private_{task_type}", private_masks[task_type]),
         ]
         for intervention, mask in runs:
+            if not intervention_selected(args.interventions, task_type, intervention):
+                continue
             rows, summary = stage6.run_one(
                 generator,
                 tasks_by_type[task_type],
@@ -376,6 +393,8 @@ def refresh_subset(
     for task_type in args.task_types:
         interventions = ["Base", "M-Random", "M-CTD", f"M-Private_{task_type}"]
         for intervention in interventions:
+            if not intervention_selected(args.interventions, task_type, intervention):
+                continue
             run_dir = subset_output / task_type / intervention
             rows = read_jsonl(run_dir / "per_task.jsonl")
             summary = stage6.summarize_rows(rows)

@@ -40,6 +40,8 @@ SUBSETS = ("single_hop", "multi_hop")
 SPLITS = ("train", "test")
 TASK_TYPES = ("A", "B", "C")
 MATRICES = ("Q", "K", "V", "O")
+MATRIX_TO_ID = {matrix: idx for idx, matrix in enumerate(MATRICES)}
+ID_TO_MATRIX = {idx: matrix for matrix, idx in MATRIX_TO_ID.items()}
 MATRIX_TO_TENSOR = {
     "Q": "q_proj_last",
     "K": "k_proj_last",
@@ -60,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=0.03)
     parser.add_argument("--top-preview", type=int, default=50)
     parser.add_argument("--deactivation-batch-size", type=int, default=1)
+    parser.add_argument("--candidate-num-shards", type=int, default=1)
+    parser.add_argument("--candidate-shard-index", type=int, default=0)
     parser.add_argument("--torch-dtype", default="bfloat16", choices=["auto", "float16", "bfloat16", "float32"])
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--overwrite", action="store_true")
@@ -175,6 +179,108 @@ def build_candidate_universe(
         "candidate_counts_by_layer": {str(layer): count for layer, count in sorted(by_layer.items())},
         "candidate_counts_by_matrix": {matrix: by_matrix[matrix] for matrix in MATRICES},
     }
+
+
+def candidates_from_matrix_dims(matrix_dims: Dict[str, List[int]]) -> List[Tuple[int, str, int]]:
+    if not matrix_dims:
+        raise ValueError("Missing matrix_dims in shard manifest.")
+    num_layers = int(next(iter(matrix_dims.values()))[0])
+    candidates: List[Tuple[int, str, int]] = []
+    for layer_idx in range(num_layers):
+        for matrix in MATRICES:
+            dim = int(matrix_dims[matrix][1])
+            candidates.extend((layer_idx, matrix, int(index)) for index in range(dim))
+    return candidates
+
+
+def shard_candidates(
+    candidates: List[Tuple[int, str, int]],
+    num_shards: int,
+    shard_index: int,
+) -> List[Tuple[int, str, int]]:
+    return [
+        candidate
+        for candidate_idx, candidate in enumerate(candidates)
+        if candidate_idx % num_shards == shard_index
+    ]
+
+
+def score_group_key(task_type: str, label: int) -> str:
+    return f"{task_type}:{int(label)}"
+
+
+def score_groups() -> List[Tuple[str, int]]:
+    return [(task_type, label) for task_type in TASK_TYPES for label in (0, 1)]
+
+
+def save_score_shard(
+    output_root: Path,
+    subset_scope: str,
+    subsets: List[str],
+    probe_splits: List[str],
+    full_candidates: List[Tuple[int, str, int]],
+    shard_candidates_: List[Tuple[int, str, int]],
+    candidate_meta: Dict[str, Any],
+    dims: Dict[str, Tuple[int, int]],
+    score_maps: Dict[Tuple[str, int], Dict[Tuple[int, str, int], float]],
+    label_counts: Dict[Tuple[str, int], int],
+    sample_counts: Counter,
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    output_root.mkdir(parents=True, exist_ok=True)
+    candidate_rows = torch.tensor(
+        [
+            [int(layer), int(MATRIX_TO_ID[matrix]), int(index)]
+            for layer, matrix, index in shard_candidates_
+        ],
+        dtype=torch.int32,
+    )
+    score_tensor = torch.empty((len(score_groups()), len(shard_candidates_)), dtype=torch.float32)
+    for group_idx, group in enumerate(score_groups()):
+        group_scores = score_maps[group]
+        score_tensor[group_idx] = torch.tensor(
+            [float(group_scores[candidate]) for candidate in shard_candidates_],
+            dtype=torch.float32,
+        )
+
+    payload = {
+        "candidate_rows": candidate_rows,
+        "scores": score_tensor,
+        "score_groups": [
+            {"task_type": task_type, "label": int(label), "key": score_group_key(task_type, label)}
+            for task_type, label in score_groups()
+        ],
+    }
+    torch.save(payload, output_root / "score_shard.pt")
+    manifest = {
+        "stage": "stage5_candidate_score_shard",
+        "model_alias": args.model_alias,
+        "model_path": args.model_path,
+        "feature_dir": args.feature_dir,
+        "output_dir": str(output_root),
+        "probe_splits": list(probe_splits),
+        "subsets": list(subsets),
+        "subset_scope": subset_scope,
+        "candidate_num_shards": int(args.candidate_num_shards),
+        "candidate_shard_index": int(args.candidate_shard_index),
+        "full_candidate_count": len(full_candidates),
+        "shard_candidate_count": len(shard_candidates_),
+        "candidate_universe": candidate_meta,
+        "matrix_dims": {matrix: list(shape) for matrix, shape in dims.items()},
+        "label_counts": {f"{task_type}:{label}": count for (task_type, label), count in sorted(sample_counts.items())},
+        "deactivation_label_counts": {
+            score_group_key(task_type, label): int(label_counts[(task_type, label)])
+            for task_type, label in score_groups()
+        },
+        "neuron_definition": "Who Transfers Safety attention projection neurons: Q/K/V projection rows and O output-projection columns.",
+        "importance_definition": "Delta_m(x,N)=||z_m(x)-z_{m,without N}(x)||_2; I_m(N,D)=mean_x Delta_m(x,N).",
+    }
+    write_json(output_root / "manifest.json", manifest)
+    print(
+        f"saved candidate score shard {args.candidate_shard_index}/{args.candidate_num_shards}: "
+        f"{output_root}"
+    )
+    return manifest
 
 
 def selected_mask(rows: List[Dict[str, Any]], dims: Dict[str, Tuple[int, int]]) -> Dict[str, torch.Tensor]:
@@ -375,6 +481,168 @@ def save_type_outputs(
     torch.save(payload, type_dir / "scores_and_masks.pt")
 
 
+def load_score_shard(shard_dir: Path) -> Tuple[Dict[str, Any], Dict[Tuple[str, int], Dict[Tuple[int, str, int], float]]]:
+    manifest_path = shard_dir / "manifest.json"
+    payload_path = shard_dir / "score_shard.pt"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing shard manifest: {manifest_path}")
+    if not payload_path.exists():
+        raise FileNotFoundError(f"Missing score shard: {payload_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = torch.load(payload_path, map_location="cpu")
+    candidate_rows = payload["candidate_rows"].to(torch.int64)
+    scores = payload["scores"].to(torch.float32)
+    groups = [
+        (str(row["task_type"]), int(row["label"]))
+        for row in payload["score_groups"]
+    ]
+    if scores.shape[0] != len(groups):
+        raise ValueError(f"Score-group mismatch in {payload_path}")
+    if scores.shape[1] != candidate_rows.shape[0]:
+        raise ValueError(f"Candidate/score count mismatch in {payload_path}")
+
+    score_maps: Dict[Tuple[str, int], Dict[Tuple[int, str, int], float]] = {
+        group: {} for group in groups
+    }
+    for col_idx, raw in enumerate(candidate_rows.tolist()):
+        layer, matrix_id, index = int(raw[0]), int(raw[1]), int(raw[2])
+        matrix = ID_TO_MATRIX[matrix_id]
+        candidate = (layer, matrix, index)
+        for group_idx, group in enumerate(groups):
+            score_maps[group][candidate] = float(scores[group_idx, col_idx].item())
+    return manifest, score_maps
+
+
+def merge_candidate_score_shards(
+    model_alias: str,
+    model_path: str,
+    feature_dir: str,
+    output_root: Path,
+    subset_scope: str,
+    subsets: List[str],
+    probe_splits: List[str],
+    top_p: float,
+    top_preview: int,
+    shard_dirs: List[Path],
+) -> Dict[str, Any]:
+    if not shard_dirs:
+        raise ValueError("No candidate score shard directories were provided.")
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    merged_scores: Dict[Tuple[str, int], Dict[Tuple[int, str, int], float]] = {
+        group: {} for group in score_groups()
+    }
+    shard_manifests: List[Dict[str, Any]] = []
+    for shard_dir in shard_dirs:
+        manifest, shard_scores = load_score_shard(shard_dir)
+        shard_manifests.append(manifest)
+        for group in score_groups():
+            group_scores = merged_scores[group]
+            for candidate, score in shard_scores[group].items():
+                if candidate in group_scores:
+                    raise ValueError(f"Duplicate candidate while merging stage-5 shards: {candidate}")
+                group_scores[candidate] = score
+
+    first_manifest = shard_manifests[0]
+    matrix_dims_raw = first_manifest["matrix_dims"]
+    dims = {matrix: (int(shape[0]), int(shape[1])) for matrix, shape in matrix_dims_raw.items()}
+    candidates = candidates_from_matrix_dims({matrix: list(shape) for matrix, shape in matrix_dims_raw.items()})
+    expected_candidates = set(candidates)
+    for group, group_scores in merged_scores.items():
+        missing = expected_candidates - set(group_scores)
+        extra = set(group_scores) - expected_candidates
+        if missing or extra:
+            raise ValueError(
+                f"Merged score coverage mismatch for {score_group_key(*group)}: "
+                f"missing={len(missing)}, extra={len(extra)}"
+            )
+
+    candidates_by_layer: Dict[int, List[Tuple[int, str, int]]] = defaultdict(list)
+    for candidate in candidates:
+        candidates_by_layer[candidate[0]].append(candidate)
+
+    label_counts = {
+        (task_type, label): int(first_manifest.get("deactivation_label_counts", {}).get(score_group_key(task_type, label), 0))
+        for task_type, label in score_groups()
+    }
+    candidate_meta = first_manifest["candidate_universe"]
+    manifest_summaries: List[Dict[str, Any]] = []
+    for task_type in TASK_TYPES:
+        scores_1 = merged_scores[(task_type, 1)]
+        scores_0 = merged_scores[(task_type, 0)]
+        top_1: List[Dict[str, Any]] = []
+        top_0: List[Dict[str, Any]] = []
+        for layer_idx in sorted(candidates_by_layer):
+            top_1.extend(top_p_for_layer(scores_1, candidates_by_layer, layer_idx, top_p))
+            top_0.extend(top_p_for_layer(scores_0, candidates_by_layer, layer_idx, top_p))
+
+        top_1_keys = {row_key(row) for row in top_1}
+        top_0_keys = {row_key(row) for row in top_0}
+        tdn_keys = top_1_keys - top_0_keys
+        score_lookup = {row_key(row): float(row["score"]) for row in top_1}
+        tdn_rows = rows_from_keys(tdn_keys, score_lookup) if tdn_keys else []
+
+        preview_1 = sorted(top_1, key=lambda row: row["score"], reverse=True)[:top_preview]
+        preview_0 = sorted(top_0, key=lambda row: row["score"], reverse=True)[:top_preview]
+        preview_tdn = sorted(tdn_rows, key=lambda row: row["score_label_1"], reverse=True)[:top_preview]
+        status = "ok" if label_counts[(task_type, 1)] > 0 and label_counts[(task_type, 0)] > 0 else "skipped_insufficient_labels"
+        summary = {
+            "task_type": task_type,
+            "status": status,
+            "n_label_1": int(label_counts[(task_type, 1)]),
+            "n_label_0": int(label_counts[(task_type, 0)]),
+            "top_p": top_p,
+            "num_layers": candidate_meta["num_layers"],
+            "candidate_mode": candidate_meta["mode"],
+            "candidate_count": len(candidates),
+            "S1_size": len(top_1),
+            "S0_size": len(top_0),
+            "TDN_size": len(tdn_rows),
+            "preview_S1": preview_1,
+            "preview_S0": preview_0,
+            "preview_TDN": preview_tdn,
+        }
+        save_type_outputs(output_root, task_type, scores_1, scores_0, top_1, top_0, tdn_rows, dims, summary)
+        manifest_summaries.append({key: value for key, value in summary.items() if not key.startswith("preview_")})
+        print(
+            f"{subset_scope}/{task_type}: merged shards, status={status}, "
+            f"n1={label_counts[(task_type, 1)]}, n0={label_counts[(task_type, 0)]}, "
+            f"S1={len(top_1)}, S0={len(top_0)}, TDN={len(tdn_rows)}"
+        )
+
+    manifest = {
+        "stage": "stage5_single_type_neuron_probing_merged_candidate_shards",
+        "model_alias": model_alias,
+        "model_path": model_path,
+        "feature_dir": feature_dir,
+        "output_dir": str(output_root),
+        "probe_splits": list(probe_splits),
+        "subsets": list(subsets),
+        "subset_scope": subset_scope,
+        "separated_by_hop": True,
+        "candidate_sharding": {
+            "num_shards": len(shard_dirs),
+            "shard_dirs": [str(path) for path in shard_dirs],
+            "shard_candidate_counts": [
+                int(manifest.get("shard_candidate_count", 0))
+                for manifest in shard_manifests
+            ],
+        },
+        "neuron_definition": "Who Transfers Safety attention projection neurons: Q/K/V projection rows and O output-projection columns.",
+        "importance_definition": "Delta_m(x,N)=||z_m(x)-z_{m,without N}(x)||_2; I_m(N,D)=mean_x Delta_m(x,N).",
+        "mask_implementation": "Q/K/V zero projection-output coordinates; O zero o_proj input coordinates, equivalent to masking W_O columns.",
+        "contrastive_definition": "TDN_{m,c,l}=TopP(I(N,D^1_{m,c})) minus TopP(I(N,D^0_{m,c}))",
+        "top_p": top_p,
+        "matrix_dims": {matrix: list(shape) for matrix, shape in dims.items()},
+        "candidate_universe": candidate_meta,
+        "label_counts": first_manifest.get("label_counts", {}),
+        "task_type_summaries": manifest_summaries,
+    }
+    write_json(output_root / "manifest.json", manifest)
+    print(f"saved merged stage-5 candidate-shard outputs: {output_root}")
+    return manifest
+
+
 def probe_scope(
     args: argparse.Namespace,
     model: Any,
@@ -401,6 +669,36 @@ def probe_scope(
         f"{subset_scope}: candidate_mode={candidate_meta['mode']}, "
         f"candidates={len(candidates)}, batch_size={args.deactivation_batch_size}"
     )
+
+    if args.candidate_num_shards > 1:
+        shard_candidates_ = shard_candidates(candidates, args.candidate_num_shards, args.candidate_shard_index)
+        print(
+            f"{subset_scope}: candidate shard "
+            f"{args.candidate_shard_index}/{args.candidate_num_shards}, "
+            f"shard_candidates={len(shard_candidates_)}"
+        )
+        score_maps, label_counts = compute_deactivation_scores(
+            model,
+            tokenizer,
+            tensors,
+            meta_rows,
+            shard_candidates_,
+            args.deactivation_batch_size,
+        )
+        return save_score_shard(
+            output_root,
+            subset_scope,
+            subsets,
+            list(args.probe_splits),
+            candidates,
+            shard_candidates_,
+            candidate_meta,
+            dims,
+            score_maps,
+            label_counts,
+            sample_counts,
+            args,
+        )
 
     score_maps, label_counts = compute_deactivation_scores(
         model,
@@ -486,6 +784,10 @@ def main() -> None:
         raise ValueError("--top-p must be in (0, 1].")
     if args.deactivation_batch_size <= 0:
         raise ValueError("--deactivation-batch-size must be positive.")
+    if args.candidate_num_shards <= 0:
+        raise ValueError("--candidate-num-shards must be positive.")
+    if args.candidate_shard_index < 0 or args.candidate_shard_index >= args.candidate_num_shards:
+        raise ValueError("--candidate-shard-index must satisfy 0 <= index < num_shards.")
 
     feature_dir = Path(args.feature_dir)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, local_files_only=True)

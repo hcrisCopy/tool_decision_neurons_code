@@ -17,6 +17,11 @@ from common import multigpu_utils as mgpu  # noqa: E402
 
 SUBSETS = ("single_hop", "multi_hop")
 TASK_TYPES = ("A", "B", "C")
+BASE_INTERVENTIONS = ("Base", "M-Random", "M-CTD")
+
+
+def interventions_for(task_type: str) -> List[str]:
+    return [*BASE_INTERVENTIONS, f"M-Private_{task_type}"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,8 +59,11 @@ def final_root(args: argparse.Namespace) -> Path:
 
 def task_complete(args: argparse.Namespace, subset: str, task_type: str) -> bool:
     task_dir = final_root(args) / subset / task_type
-    interventions = ["Base", "M-Random", "M-CTD", f"M-Private_{task_type}"]
-    return all(mgpu.complete(task_dir / intervention, ("per_task.jsonl", "summary.json")) for intervention in interventions)
+    return all(mgpu.complete(task_dir / intervention, ("per_task.jsonl", "summary.json")) for intervention in interventions_for(task_type))
+
+
+def unit_complete(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> bool:
+    return mgpu.complete(final_root(args) / subset / task_type / intervention, ("per_task.jsonl", "summary.json"))
 
 
 def stage_complete(args: argparse.Namespace) -> bool:
@@ -65,14 +73,17 @@ def stage_complete(args: argparse.Namespace) -> bool:
     )
 
 
-def unit_root(args: argparse.Namespace, subset: str, task_type: str) -> Path:
-    return final_root(args) / "_stage8_workers" / subset / task_type
+def safe_intervention(intervention: str) -> str:
+    return intervention.replace("/", "_")
 
 
-def build_job(args: argparse.Namespace, subset: str, task_type: str, device_group: str) -> mgpu.Job:
-    temp_root = unit_root(args, subset, task_type)
+def unit_root(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> Path:
+    return final_root(args) / "_stage8_workers" / subset / task_type / safe_intervention(intervention)
+
+
+def build_job(args: argparse.Namespace, subset: str, task_type: str, intervention: str, device: str) -> mgpu.Job:
+    temp_root = unit_root(args, subset, task_type, intervention)
     mgpu.remove_if_exists(temp_root)
-    device_map = mgpu.effective_device_map(args.device_map, device_group)
     cmd = mgpu.command(
         "code/07_cross_type_causal_validation/run_cross_type_causal_validation.py",
         "--model-alias",
@@ -100,11 +111,13 @@ def build_job(args: argparse.Namespace, subset: str, task_type: str, device_grou
         "--torch-dtype",
         args.torch_dtype,
         "--device-map",
-        device_map,
+        args.device_map,
         "--enable-thinking",
         args.enable_thinking,
         "--record-mode",
         args.record_mode,
+        "--interventions",
+        intervention,
         "--overwrite",
     )
     mgpu.add_list(cmd, "--subsets", [subset])
@@ -115,16 +128,16 @@ def build_job(args: argparse.Namespace, subset: str, task_type: str, device_grou
         mgpu.add_kv(cmd, "--top-p", args.top_p)
     if args.top_k is not None:
         mgpu.add_kv(cmd, "--top-k", args.top_k)
-    return mgpu.Job(name=f"stage8-{subset}-{task_type}", cmd=cmd, cuda_device=device_group)
+    return mgpu.Job(name=f"stage8-{subset}-{task_type}-{intervention}", cmd=cmd, cuda_device=device)
 
 
-def copy_unit(args: argparse.Namespace, subset: str, task_type: str) -> None:
-    src = unit_root(args, subset, task_type) / args.model_alias / "cross_type_by_subset" / subset / task_type
-    dst = final_root(args) / subset / task_type
-    if task_complete(args, subset, task_type) and not args.overwrite:
+def copy_unit(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> None:
+    src = unit_root(args, subset, task_type, intervention) / args.model_alias / "cross_type_by_subset" / subset / task_type / intervention
+    dst = final_root(args) / subset / task_type / intervention
+    if unit_complete(args, subset, task_type, intervention) and not args.overwrite:
         print(f"[skip] stage8 unit complete: {dst}", flush=True)
         return
-    if not src.exists():
+    if not mgpu.complete(src, ("per_task.jsonl", "summary.json")):
         raise FileNotFoundError(f"Missing worker output: {src}")
     mgpu.copytree(src, dst, overwrite=True)
 
@@ -169,22 +182,26 @@ def main() -> None:
         print(f"[skip] stage 8 already complete: {final_root(args)}", flush=True)
         return
     devices = mgpu.parse_devices(args.cuda_devices, args.num_gpus)
-    units = [(subset, task_type) for subset in args.subsets for task_type in args.task_types]
-    runnable_units: List[tuple[str, str]] = []
-    for idx, (subset, task_type) in enumerate(units):
-        if task_complete(args, subset, task_type) and not args.overwrite:
-            print(f"[skip] stage8 unit complete before launch: {subset}/{task_type}", flush=True)
+    units = [
+        (subset, task_type, intervention)
+        for subset in args.subsets
+        for task_type in args.task_types
+        for intervention in interventions_for(task_type)
+    ]
+    runnable_units: List[tuple[str, str, str]] = []
+    for subset, task_type, intervention in units:
+        if unit_complete(args, subset, task_type, intervention) and not args.overwrite:
+            print(f"[skip] stage8 unit complete before launch: {subset}/{task_type}/{intervention}", flush=True)
             continue
-        runnable_units.append((subset, task_type))
-    device_groups = mgpu.assign_device_groups(devices, len(runnable_units))
+        runnable_units.append((subset, task_type, intervention))
     jobs = [
-        build_job(args, subset, task_type, device_groups[idx])
-        for idx, (subset, task_type) in enumerate(runnable_units)
+        build_job(args, subset, task_type, intervention, devices[idx % len(devices)])
+        for idx, (subset, task_type, intervention) in enumerate(runnable_units)
     ]
     if jobs:
         mgpu.run_jobs(jobs, max_parallel=min(len(jobs), args.num_gpus))
-    for subset, task_type in units:
-        copy_unit(args, subset, task_type)
+    for subset, task_type, intervention in units:
+        copy_unit(args, subset, task_type, intervention)
     refresh(args)
     if not args.keep_workdir:
         mgpu.remove_if_exists(final_root(args) / "_stage8_workers")

@@ -98,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--record-mode", default="lite", choices=["lite", "full", "off"])
+    parser.add_argument(
+        "--interventions",
+        nargs="+",
+        default=[],
+        help="Optional worker filter. Use Base, M-Random, M-TDN, or concrete names such as M-TDN_A.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--refresh-existing",
@@ -123,6 +129,15 @@ def enable_thinking_value(value: str) -> Optional[bool]:
     if value == "false":
         return False
     return None
+
+
+def intervention_selected(requested: List[str], task_type: str, intervention: str) -> bool:
+    if not requested:
+        return True
+    aliases = {intervention}
+    if intervention == f"M-TDN_{task_type}":
+        aliases.add("M-TDN")
+    return bool(set(requested) & aliases)
 
 
 def parse_json_field(value: Any, default: Any) -> Any:
@@ -980,6 +995,8 @@ def run_scope(
             (f"M-TDN_{task_type}", tdn_masks[task_type]),
         ]
         for intervention, mask in runs:
+            if not intervention_selected(args.interventions, task_type, intervention):
+                continue
             rows, summary = run_one(
                 generator,
                 tasks,
@@ -1051,6 +1068,8 @@ def refresh_scope(
     for task_type in args.task_types:
         interventions = ["Base", "M-Random", f"M-TDN_{task_type}"]
         for intervention in interventions:
+            if not intervention_selected(args.interventions, task_type, intervention):
+                continue
             run_dir = output_root / task_type / intervention
             rows = read_jsonl(run_dir / "per_task.jsonl")
             old_summary = read_json(run_dir / "summary.json") if (run_dir / "summary.json").exists() else {}

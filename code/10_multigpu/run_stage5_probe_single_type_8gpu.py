@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -17,6 +18,7 @@ from common import multigpu_utils as mgpu  # noqa: E402
 
 SUBSETS = ("single_hop", "multi_hop")
 SUBSET_FILES = ("manifest.json",)
+SHARD_FILES = ("manifest.json", "score_shard.pt")
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,10 +60,26 @@ def worker_root(args: argparse.Namespace, subset: str) -> Path:
     return final_root(args) / "_stage5_workers" / subset
 
 
-def build_job(args: argparse.Namespace, subset: str, device_group: str) -> mgpu.Job:
-    temp_root = worker_root(args, subset)
-    mgpu.remove_if_exists(temp_root)
-    device_map = mgpu.effective_device_map(args.device_map, device_group)
+def shard_root(args: argparse.Namespace, subset: str, shard_index: int) -> Path:
+    return worker_root(args, subset) / f"shard_{shard_index:05d}"
+
+
+def shard_subset_dir(args: argparse.Namespace, subset: str, shard_index: int) -> Path:
+    return shard_root(args, subset, shard_index) / args.model_alias / "single_type_by_subset" / subset
+
+
+def load_probe_module() -> Any:
+    path = CODE_ROOT / "04_single_type_neuron_probing" / "probe_single_type_neurons.py"
+    spec = importlib.util.spec_from_file_location("stage5_probe_single_type_neurons", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def build_job(args: argparse.Namespace, subset: str, shard_index: int, device: str) -> mgpu.Job:
+    temp_root = shard_root(args, subset, shard_index)
     cmd = mgpu.command(
         "code/04_single_type_neuron_probing/probe_single_type_neurons.py",
         "--model-alias",
@@ -82,27 +100,49 @@ def build_job(args: argparse.Namespace, subset: str, device_group: str) -> mgpu.
         "--torch-dtype",
         args.torch_dtype,
         "--device-map",
-        device_map,
+        args.device_map,
+        "--candidate-num-shards",
+        args.num_gpus,
+        "--candidate-shard-index",
+        shard_index,
     )
     mgpu.add_list(cmd, "--subsets", [subset])
     mgpu.add_list(cmd, "--probe-splits", args.probe_splits)
     mgpu.add_flag(cmd, "--overwrite", args.overwrite)
-    return mgpu.Job(name=f"stage5-{subset}", cmd=cmd, cuda_device=device_group)
+    return mgpu.Job(name=f"stage5-{subset}-shard-{shard_index:05d}", cmd=cmd, cuda_device=device)
 
 
 def merge_outputs(args: argparse.Namespace) -> None:
     root = final_root(args)
     root.mkdir(parents=True, exist_ok=True)
+    probe = load_probe_module()
     children: List[Dict[str, Any]] = []
     for subset in args.subsets:
         if subset_complete(args, subset) and not args.overwrite:
             print(f"[skip] stage5 subset complete: {root / subset}", flush=True)
         else:
-            src = worker_root(args, subset) / args.model_alias / "single_type_by_subset" / subset
             dst = root / subset
-            if not mgpu.complete(src, SUBSET_FILES):
-                raise FileNotFoundError(f"Missing worker output: {src}")
-            mgpu.copytree(src, dst, overwrite=True)
+            mgpu.remove_if_exists(dst)
+            shard_dirs = [shard_subset_dir(args, subset, shard_index) for shard_index in range(args.num_gpus)]
+            missing = [
+                str(shard_dir)
+                for shard_dir in shard_dirs
+                if not mgpu.complete(shard_dir, SHARD_FILES)
+            ]
+            if missing:
+                raise FileNotFoundError(f"Missing complete stage5 score shards for {subset}: {missing[:3]}")
+            probe.merge_candidate_score_shards(
+                args.model_alias,
+                args.model_path,
+                args.feature_dir,
+                dst,
+                subset,
+                [subset],
+                list(args.probe_splits),
+                args.top_p,
+                args.top_preview,
+                shard_dirs,
+            )
         manifest = mgpu.read_json(root / subset / "manifest.json")
         children.append(
             {
@@ -137,16 +177,16 @@ def main() -> None:
         print(f"[skip] stage 5 already complete: {final_root(args)}", flush=True)
         return
     devices = mgpu.parse_devices(args.cuda_devices, args.num_gpus)
-    units: List[str] = []
-    for idx, subset in enumerate(args.subsets):
+    jobs: List[mgpu.Job] = []
+    for subset in args.subsets:
         if subset_complete(args, subset) and not args.overwrite:
             print(f"[skip] stage5 subset complete before launch: {subset}", flush=True)
             continue
-        units.append(subset)
-    device_groups = mgpu.assign_device_groups(devices, len(units))
-    jobs = [build_job(args, subset, device_groups[idx]) for idx, subset in enumerate(units)]
+        mgpu.remove_if_exists(worker_root(args, subset))
+        for shard_index, device in enumerate(devices):
+            jobs.append(build_job(args, subset, shard_index, device))
     if jobs:
-        mgpu.run_jobs(jobs, max_parallel=min(len(jobs), args.num_gpus))
+        mgpu.run_jobs(jobs, max_parallel=args.num_gpus)
     merge_outputs(args)
     if not args.keep_workdir:
         mgpu.remove_if_exists(final_root(args) / "_stage5_workers")
