@@ -276,7 +276,7 @@ python code/10_multigpu/run_stage5_probe_single_type_8gpu.py \
   --device-map auto
 ```
 
-多卡方式：不是切数据，而是切候选神经元。对每个 subset，完整候选神经元集合按 `candidate_idx % 8` 分成 8 份，每张卡加载一个模型，只计算自己的候选神经元 deactivation score。8 个 `score_shard.pt` 完成后，runner 检查候选神经元无重复、无缺失，再在完整每层候选集合上做 TopP 和 `S1 - S0`，输出正式 A/B/C 神经元文件。若正式 subset 输出已完整，默认提前跳过；若正式输出不完整，会先清理对应 `_stage5_workers/<subset>` 旧临时产物再重跑。
+多卡方式：不是切数据，而是切候选神经元。对每个 subset，完整候选神经元集合按 `candidate_idx % 8` 分成 8 份，每张卡加载一个模型，只计算自己的候选神经元 deactivation score。8 个 `score_shard.pt` 完成后，runner 检查候选神经元无重复、无缺失，再在完整每层候选集合上做 TopP 和 `S1 - S0`，输出正式 A/B/C 神经元文件。只有带有当前候选分片合并签名的正式 subset 才会被判定为完成；旧版本完整产物、半成品、分片数不一致的产物都会被视为 stale，并在重跑前自动清理。中断后重跑时，已完成且签名正确的 subset 会提前跳过。
 
 输出：
 
@@ -333,7 +333,7 @@ python code/10_multigpu/run_stage6_single_type_causal_validation_8gpu.py \
   --record-mode lite
 ```
 
-多卡方式：按 `subset × task_type × intervention` 拆成 18 个单卡 worker，最多同时跑 8 个。每个 worker 只写一个 intervention 目录，全部完成后自动 refresh 生成汇总表和图。已完整的 intervention 目录默认提前跳过；未完成 worker 的旧临时目录会在重跑前清理。
+多卡方式：按 `subset × task_type × intervention` 拆成 18 个单卡 worker，最多同时跑 8 个。每个 worker 只写一个 intervention 目录，全部完成后自动 refresh 生成汇总表和图。每个 intervention 会额外保存 `runner_meta.json`，记录当前 Stage 5 subset manifest 的 hash；中断后重跑时，只有文件完整且 hash 一致的 unit 会跳过。旧版本产物、半成品、依赖神经元已变化的产物都会在重跑前自动清理。
 
 输出：
 
@@ -437,7 +437,7 @@ python code/10_multigpu/run_stage8_cross_type_causal_validation_8gpu.py \
   --record-mode lite
 ```
 
-多卡方式：按 `subset × task_type × intervention` 拆成 24 个单卡 worker，最多同时跑 8 个。全部完成后自动 refresh 汇总表格和图。
+多卡方式：按 `subset × task_type × intervention` 拆成 24 个单卡 worker，最多同时跑 8 个。全部完成后自动 refresh 汇总表格和图。每个 intervention 会额外保存 `runner_meta.json`，记录当前 Stage 7 shared manifest 和 Stage 5 single-type manifest 的 hash；中断后重跑时，只有文件完整且依赖 hash 一致的 unit 会跳过。旧版本产物、半成品、依赖已变化的产物都会在重跑前自动清理。
 
 输出：
 

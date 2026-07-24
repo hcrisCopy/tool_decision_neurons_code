@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CODE_ROOT = REPO_ROOT / "code"
@@ -18,6 +18,7 @@ from common import multigpu_utils as mgpu  # noqa: E402
 SUBSETS = ("single_hop", "multi_hop")
 TASK_TYPES = ("A", "B", "C")
 BASE_INTERVENTIONS = ("Base", "M-Random")
+RUNNER_VERSION = "stage6_intervention_parallel_v1"
 
 
 def interventions_for(task_type: str) -> List[str]:
@@ -56,13 +57,51 @@ def final_root(args: argparse.Namespace) -> Path:
     return Path(args.output_dir) / args.model_alias / "single_type_by_subset"
 
 
+def dependency_hash(args: argparse.Namespace, subset: str) -> str:
+    path = Path(args.neuron_dir) / subset / "manifest.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing stage5 subset manifest: {path}")
+    return mgpu.file_sha256(path)
+
+
+def expected_unit_meta(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> Dict[str, Any]:
+    return {
+        "runner_version": RUNNER_VERSION,
+        "model_alias": args.model_alias,
+        "model_path": args.model_path,
+        "modified_dir": args.modified_dir,
+        "neuron_dir": args.neuron_dir,
+        "neuron_subset_manifest_sha256": dependency_hash(args, subset),
+        "subset": subset,
+        "task_type": task_type,
+        "intervention": intervention,
+        "split": args.split,
+        "max_rounds": int(args.max_rounds),
+        "max_new_tokens": int(args.max_new_tokens),
+        "max_tasks_per_type": int(args.max_tasks_per_type),
+        "seed": int(args.seed),
+        "record_mode": args.record_mode,
+    }
+
+
+def unit_meta_matches(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> bool:
+    path = final_root(args) / subset / task_type / intervention / "runner_meta.json"
+    if not path.exists():
+        return False
+    try:
+        old_meta = mgpu.read_json(path)
+    except (OSError, ValueError):
+        return False
+    return old_meta == expected_unit_meta(args, subset, task_type, intervention)
+
+
 def task_complete(args: argparse.Namespace, subset: str, task_type: str) -> bool:
-    task_dir = final_root(args) / subset / task_type
-    return all(mgpu.complete(task_dir / intervention, ("per_task.jsonl", "summary.json")) for intervention in interventions_for(task_type))
+    return all(unit_complete(args, subset, task_type, intervention) for intervention in interventions_for(task_type))
 
 
 def unit_complete(args: argparse.Namespace, subset: str, task_type: str, intervention: str) -> bool:
-    return mgpu.complete(final_root(args) / subset / task_type / intervention, ("per_task.jsonl", "summary.json"))
+    run_dir = final_root(args) / subset / task_type / intervention
+    return mgpu.complete(run_dir, ("per_task.jsonl", "summary.json")) and unit_meta_matches(args, subset, task_type, intervention)
 
 
 def stage_complete(args: argparse.Namespace) -> bool:
@@ -138,6 +177,7 @@ def copy_unit(args: argparse.Namespace, subset: str, task_type: str, interventio
     if not mgpu.complete(src, ("per_task.jsonl", "summary.json")):
         raise FileNotFoundError(f"Missing worker output: {src}")
     mgpu.copytree(src, dst, overwrite=True)
+    mgpu.write_json(dst / "runner_meta.json", expected_unit_meta(args, subset, task_type, intervention))
 
 
 def refresh(args: argparse.Namespace) -> None:
@@ -190,6 +230,10 @@ def main() -> None:
         if unit_complete(args, subset, task_type, intervention) and not args.overwrite:
             print(f"[skip] stage6 unit complete before launch: {subset}/{task_type}/{intervention}", flush=True)
             continue
+        stale_dir = final_root(args) / subset / task_type / intervention
+        if stale_dir.exists():
+            print(f"[clean] removing stale or partial stage6 unit: {stale_dir}", flush=True)
+            mgpu.remove_if_exists(stale_dir)
         runnable_units.append((subset, task_type, intervention))
     jobs = [
         build_job(args, subset, task_type, intervention, devices[idx % len(devices)])

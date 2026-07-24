@@ -19,6 +19,8 @@ from common import multigpu_utils as mgpu  # noqa: E402
 SUBSETS = ("single_hop", "multi_hop")
 SUBSET_FILES = ("manifest.json",)
 SHARD_FILES = ("manifest.json", "score_shard.pt")
+EXPECTED_SUBSET_STAGE = "stage5_single_type_neuron_probing_merged_candidate_shards"
+EXPECTED_ROOT_STAGE = "stage5_single_type_neuron_probing_by_subset_candidate_sharded_multigpu"
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,11 +51,29 @@ def subset_complete(args: argparse.Namespace, subset: str) -> bool:
     subset_dir = final_root(args) / subset
     if not mgpu.complete(subset_dir, SUBSET_FILES):
         return False
+    try:
+        manifest = mgpu.read_json(subset_dir / "manifest.json")
+    except (OSError, ValueError):
+        return False
+    if manifest.get("stage") != EXPECTED_SUBSET_STAGE:
+        print(f"[stale] stage5 subset was not produced by candidate-shard merge: {subset_dir}", flush=True)
+        return False
+    sharding = manifest.get("candidate_sharding", {})
+    if int(sharding.get("num_shards", -1)) != int(args.num_gpus):
+        print(f"[stale] stage5 subset shard count changed: {subset_dir}", flush=True)
+        return False
     return all((subset_dir / task_type / "summary.json").exists() for task_type in ("A", "B", "C"))
 
 
 def stage_complete(args: argparse.Namespace) -> bool:
-    return all(subset_complete(args, subset) for subset in args.subsets) and (final_root(args) / "manifest.json").exists()
+    manifest_path = final_root(args) / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        manifest = mgpu.read_json(manifest_path)
+    except (OSError, ValueError):
+        return False
+    return manifest.get("stage") == EXPECTED_ROOT_STAGE and all(subset_complete(args, subset) for subset in args.subsets)
 
 
 def worker_root(args: argparse.Namespace, subset: str) -> Path:
@@ -156,7 +176,7 @@ def merge_outputs(args: argparse.Namespace) -> None:
     mgpu.write_json(
         root / "manifest.json",
         {
-            "stage": "stage5_single_type_neuron_probing_by_subset_multigpu",
+            "stage": EXPECTED_ROOT_STAGE,
             "model_alias": args.model_alias,
             "model_path": args.model_path,
             "feature_dir": args.feature_dir,
@@ -182,6 +202,9 @@ def main() -> None:
         if subset_complete(args, subset) and not args.overwrite:
             print(f"[skip] stage5 subset complete before launch: {subset}", flush=True)
             continue
+        if (final_root(args) / subset).exists():
+            print(f"[clean] removing stale or partial stage5 subset output: {final_root(args) / subset}", flush=True)
+            mgpu.remove_if_exists(final_root(args) / subset)
         mgpu.remove_if_exists(worker_root(args, subset))
         for shard_index, device in enumerate(devices):
             jobs.append(build_job(args, subset, shard_index, device))
