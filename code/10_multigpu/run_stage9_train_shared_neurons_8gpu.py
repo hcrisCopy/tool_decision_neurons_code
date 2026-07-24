@@ -65,9 +65,10 @@ def worker_root(args: argparse.Namespace, subset: str) -> Path:
     return final_root(args) / "_stage9_workers" / subset
 
 
-def build_job(args: argparse.Namespace, subset: str, device: str) -> mgpu.Job:
+def build_job(args: argparse.Namespace, subset: str, device_group: str) -> mgpu.Job:
     temp_root = worker_root(args, subset)
     mgpu.remove_if_exists(temp_root)
+    device_map = mgpu.effective_device_map(args.device_map, device_group)
     cmd = mgpu.command(
         "code/08_training/train_shared_neurons.py",
         "--model-alias",
@@ -99,7 +100,7 @@ def build_job(args: argparse.Namespace, subset: str, device: str) -> mgpu.Job:
         "--torch-dtype",
         args.torch_dtype,
         "--device-map",
-        args.device_map,
+        device_map,
         "--enable-thinking",
         args.enable_thinking,
         "--max-gradient-norm",
@@ -109,7 +110,7 @@ def build_job(args: argparse.Namespace, subset: str, device: str) -> mgpu.Job:
     mgpu.add_list(cmd, "--subsets", [subset])
     mgpu.add_list(cmd, "--task-types", args.task_types)
     mgpu.add_flag(cmd, "--save-full-selected-param-snapshot", args.save_full_selected_param_snapshot)
-    return mgpu.Job(name=f"stage9-{subset}", cmd=cmd, cuda_device=device)
+    return mgpu.Job(name=f"stage9-{subset}", cmd=cmd, cuda_device=device_group)
 
 
 def merge_outputs(args: argparse.Namespace) -> None:
@@ -148,12 +149,14 @@ def main() -> None:
         print(f"[skip] stage 9 already complete: {final_root(args)}", flush=True)
         return
     devices = mgpu.parse_devices(args.cuda_devices, args.num_gpus)
-    jobs: List[mgpu.Job] = []
+    units: List[str] = []
     for idx, subset in enumerate(args.subsets):
         if subset_complete(args, subset) and not args.overwrite:
             print(f"[skip] stage9 subset complete before launch: {subset}", flush=True)
             continue
-        jobs.append(build_job(args, subset, devices[idx % len(devices)]))
+        units.append(subset)
+    device_groups = mgpu.assign_device_groups(devices, len(units))
+    jobs = [build_job(args, subset, device_groups[idx]) for idx, subset in enumerate(units)]
     if jobs:
         mgpu.run_jobs(jobs, max_parallel=min(len(jobs), args.num_gpus))
     merge_outputs(args)

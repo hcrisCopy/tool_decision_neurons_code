@@ -488,6 +488,8 @@ $DATA_ROOT/datasets/modified_when2tool/
 
 单跳和多跳都提取，train/test 都保存；阶段 5 只会使用 train split。
 
+阶段 4-10 的多卡 runner 会尽量占满 `--cuda-devices` 给出的 8 张卡：任务数不少于 8 时按单卡任务并行；任务数少于 8 时自动把 GPU 分组分给任务，例如 Stage 5/9 的 single_hop、multi_hop 会变成 4 卡 + 4 卡。对子进程仍传 `--device-map auto` 即可，runner 在多卡组内会自动改成 `balanced`，让模型层分布到该组所有可见 GPU。
+
 ```bash
 python code/10_multigpu/run_stage4_extract_features_8gpu.py \
   --model-alias qwen3-4b-instruct \

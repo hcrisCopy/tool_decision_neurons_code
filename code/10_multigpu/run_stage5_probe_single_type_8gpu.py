@@ -58,8 +58,9 @@ def worker_root(args: argparse.Namespace, subset: str) -> Path:
     return final_root(args) / "_stage5_workers" / subset
 
 
-def build_job(args: argparse.Namespace, subset: str, device: str) -> mgpu.Job:
+def build_job(args: argparse.Namespace, subset: str, device_group: str) -> mgpu.Job:
     temp_root = worker_root(args, subset)
+    device_map = mgpu.effective_device_map(args.device_map, device_group)
     cmd = mgpu.command(
         "code/04_single_type_neuron_probing/probe_single_type_neurons.py",
         "--model-alias",
@@ -80,12 +81,12 @@ def build_job(args: argparse.Namespace, subset: str, device: str) -> mgpu.Job:
         "--torch-dtype",
         args.torch_dtype,
         "--device-map",
-        args.device_map,
+        device_map,
     )
     mgpu.add_list(cmd, "--subsets", [subset])
     mgpu.add_list(cmd, "--probe-splits", args.probe_splits)
     mgpu.add_flag(cmd, "--overwrite", args.overwrite)
-    return mgpu.Job(name=f"stage5-{subset}", cmd=cmd, cuda_device=device)
+    return mgpu.Job(name=f"stage5-{subset}", cmd=cmd, cuda_device=device_group)
 
 
 def merge_outputs(args: argparse.Namespace) -> None:
@@ -135,12 +136,14 @@ def main() -> None:
         print(f"[skip] stage 5 already complete: {final_root(args)}", flush=True)
         return
     devices = mgpu.parse_devices(args.cuda_devices, args.num_gpus)
-    jobs: List[mgpu.Job] = []
+    units: List[str] = []
     for idx, subset in enumerate(args.subsets):
         if subset_complete(args, subset) and not args.overwrite:
             print(f"[skip] stage5 subset complete before launch: {subset}", flush=True)
             continue
-        jobs.append(build_job(args, subset, devices[idx % len(devices)]))
+        units.append(subset)
+    device_groups = mgpu.assign_device_groups(devices, len(units))
+    jobs = [build_job(args, subset, device_groups[idx]) for idx, subset in enumerate(units)]
     if jobs:
         mgpu.run_jobs(jobs, max_parallel=min(len(jobs), args.num_gpus))
     merge_outputs(args)

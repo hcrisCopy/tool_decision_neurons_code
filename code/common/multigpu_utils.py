@@ -37,6 +37,38 @@ def parse_devices(devices: str, num_gpus: int) -> List[str]:
     return parsed[:num_gpus]
 
 
+def assign_device_groups(devices: Sequence[str], num_jobs: int) -> List[str]:
+    if num_jobs <= 0:
+        return []
+    if not devices:
+        raise ValueError("No CUDA devices were provided.")
+    device_list = [str(device) for device in devices]
+    if num_jobs >= len(device_list):
+        return [device_list[idx % len(device_list)] for idx in range(num_jobs)]
+
+    groups: List[List[str]] = []
+    start = 0
+    base = len(device_list) // num_jobs
+    extra = len(device_list) % num_jobs
+    for group_idx in range(num_jobs):
+        width = base + (1 if group_idx < extra else 0)
+        groups.append(device_list[start : start + width])
+        start += width
+    return [",".join(group) for group in groups]
+
+
+def device_count(cuda_device: Optional[str]) -> int:
+    if cuda_device is None:
+        return 0
+    return len([item for item in str(cuda_device).split(",") if item.strip()])
+
+
+def effective_device_map(requested: str, cuda_device: Optional[str]) -> str:
+    if str(requested).lower() == "auto" and device_count(cuda_device) > 1:
+        return "balanced"
+    return str(requested)
+
+
 def run_jobs(jobs: Sequence[Job], max_parallel: int) -> None:
     if max_parallel <= 0:
         raise ValueError("max_parallel must be positive.")

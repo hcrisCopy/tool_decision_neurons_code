@@ -69,9 +69,10 @@ def unit_root(args: argparse.Namespace, subset: str, task_type: str) -> Path:
     return final_root(args) / "_stage8_workers" / subset / task_type
 
 
-def build_job(args: argparse.Namespace, subset: str, task_type: str, device: str) -> mgpu.Job:
+def build_job(args: argparse.Namespace, subset: str, task_type: str, device_group: str) -> mgpu.Job:
     temp_root = unit_root(args, subset, task_type)
     mgpu.remove_if_exists(temp_root)
+    device_map = mgpu.effective_device_map(args.device_map, device_group)
     cmd = mgpu.command(
         "code/07_cross_type_causal_validation/run_cross_type_causal_validation.py",
         "--model-alias",
@@ -99,7 +100,7 @@ def build_job(args: argparse.Namespace, subset: str, task_type: str, device: str
         "--torch-dtype",
         args.torch_dtype,
         "--device-map",
-        args.device_map,
+        device_map,
         "--enable-thinking",
         args.enable_thinking,
         "--record-mode",
@@ -114,7 +115,7 @@ def build_job(args: argparse.Namespace, subset: str, task_type: str, device: str
         mgpu.add_kv(cmd, "--top-p", args.top_p)
     if args.top_k is not None:
         mgpu.add_kv(cmd, "--top-k", args.top_k)
-    return mgpu.Job(name=f"stage8-{subset}-{task_type}", cmd=cmd, cuda_device=device)
+    return mgpu.Job(name=f"stage8-{subset}-{task_type}", cmd=cmd, cuda_device=device_group)
 
 
 def copy_unit(args: argparse.Namespace, subset: str, task_type: str) -> None:
@@ -169,12 +170,17 @@ def main() -> None:
         return
     devices = mgpu.parse_devices(args.cuda_devices, args.num_gpus)
     units = [(subset, task_type) for subset in args.subsets for task_type in args.task_types]
-    jobs: List[mgpu.Job] = []
+    runnable_units: List[tuple[str, str]] = []
     for idx, (subset, task_type) in enumerate(units):
         if task_complete(args, subset, task_type) and not args.overwrite:
             print(f"[skip] stage8 unit complete before launch: {subset}/{task_type}", flush=True)
             continue
-        jobs.append(build_job(args, subset, task_type, devices[idx % len(devices)]))
+        runnable_units.append((subset, task_type))
+    device_groups = mgpu.assign_device_groups(devices, len(runnable_units))
+    jobs = [
+        build_job(args, subset, task_type, device_groups[idx])
+        for idx, (subset, task_type) in enumerate(runnable_units)
+    ]
     if jobs:
         mgpu.run_jobs(jobs, max_parallel=min(len(jobs), args.num_gpus))
     for subset, task_type in units:
