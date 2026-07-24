@@ -62,6 +62,7 @@ tool_decision_neurons_code/
 |   |   |-- model_registry.py              # 模型 alias、repo_id 和本地相对路径
 |   |   |-- io_utils.py                    # JSON / JSONL / CSV 等读写
 |   |   |-- causal_plots.py                # 阶段 6/8 的因果验证图表
+|   |   |-- multigpu_utils.py              # 单机多卡 runner 的进程调度和合并工具
 |   |-- 01_labeling/                       # 阶段 2：每个模型跑 tool_necessary 标签
 |   |   |-- build_when2tool_labels.py      # 对齐 When2Tool hard_no_tool 生成 0/1 标签
 |   |   |-- README.md                      # 本阶段说明
@@ -82,6 +83,13 @@ tool_decision_neurons_code/
 |   |   |-- train_shared_neurons.py
 |   |-- 09_evaluation/                     # 阶段 10：指标汇总和评测
 |   |   |-- evaluate_training_summary.py
+|   |-- 10_multigpu/                       # 阶段 4-10：单机 8 卡 Python 调度入口
+|   |   |-- run_stage4_extract_features_8gpu.py
+|   |   |-- run_stage5_probe_single_type_8gpu.py
+|   |   |-- run_stage6_single_type_causal_validation_8gpu.py
+|   |   |-- run_stage8_cross_type_causal_validation_8gpu.py
+|   |   |-- run_stage9_train_shared_neurons_8gpu.py
+|   |   |-- run_stage10_evaluate_training_summary_8gpu.py
 |   |-- third_party/                       # 第三方代码适配，不直接混入主逻辑
 |       |-- when2tool_adapter/             # When2Tool 原方法适配
 |       |   |-- env_schemas/                # 阶段 2 复用的工具 schema
@@ -481,18 +489,21 @@ $DATA_ROOT/datasets/modified_when2tool/
 单跳和多跳都提取，train/test 都保存；阶段 5 只会使用 train split。
 
 ```bash
-python code/03_feature_extraction/extract_features.py \
+python code/10_multigpu/run_stage4_extract_features_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --output-dir ../tool_decision_neurons_data/features \
   --subsets single_hop multi_hop \
   --splits train test \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --torch-dtype bfloat16 \
   --device-map auto \
-  --enable-thinking auto \
-  --overwrite
+  --enable-thinking auto
 ```
+
+单机 8 卡按样本行分片抽激活，合并后仍写入正式 split 目录；如果目标 split 已有完整 `activations.pt/meta.jsonl/summary.json`，默认提前跳过。需要强制重跑时再加 `--overwrite`。
 
 输出：
 
@@ -520,20 +531,22 @@ $DATA_ROOT/features/<model_alias>/
 神经元定义直接对齐 Who Transfers Safety?：`N=(layer, matrix, index)`，`matrix` 属于 `Q/K/V/O`。Q/K/V 神经元对应 `W_Q/W_K/W_V` 的行，O 神经元对应 `W_O` 的列。重要性用去激活前后的最后 token 表示差计算，A/B/C 每类分别得到 `TDN_c = top(tool_necessary=1) - top(tool_necessary=0)`。
 
 ```bash
-python code/04_single_type_neuron_probing/probe_single_type_neurons.py \
+python code/10_multigpu/run_stage5_probe_single_type_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --feature-dir ../tool_decision_neurons_data/features/qwen3-4b-instruct \
   --output-dir ../tool_decision_neurons_data/neurons \
   --subsets single_hop multi_hop \
   --probe-splits train \
-  --separate-subsets \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --top-p 0.03 \
   --deactivation-batch-size 1 \
   --torch-dtype bfloat16 \
-  --device-map auto \
-  --overwrite
+  --device-map auto
 ```
+
+single_hop / multi_hop 分别作为独立探测任务并行调度；最终目录仍是 `single_type_by_subset/`。已有完整 subset 输出时默认提前跳过。
 
 输出：
 
@@ -563,20 +576,23 @@ $DATA_ROOT/neurons/<model_alias>/single_type_by_subset/
 对每个任务类型分别跑 `Base`、`M-Random`、`M-TDN_c`。指标对齐 When2Tool 风格：`Acc`、`TC`、`AvgTC`、`TCR`，同时保存工具决策相关的 `ToolAcc`、`ToolNecessaryAcc`、`NoToolAcc`、`OverCall`。
 
 ```bash
-python code/05_single_type_causal_validation/run_single_type_causal_validation.py \
+python code/10_multigpu/run_stage6_single_type_causal_validation_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --neuron-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
   --output-dir ../tool_decision_neurons_data/causal_validation \
   --subsets single_hop multi_hop \
+  --task-types A B C \
   --split test \
-  --separate-subsets \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --max-rounds 10 \
   --max-new-tokens 2048 \
-  --record-mode lite \
-  --overwrite
+  --record-mode lite
 ```
+
+单机 8 卡按 `subset × task_type` 分成 6 个推理任务并行跑；每个任务内部仍评测 `Base/M-Random/M-TDN_c`。全部任务结束后自动 refresh 汇总表格和图。已有完整 unit 输出时默认提前跳过。
 
 输出：
 
@@ -615,8 +631,10 @@ python code/06_shared_neuron_discovery/discover_shared_neurons.py \
   --causal-dir ../tool_decision_neurons_data/causal_validation/qwen3-4b-instruct/single_type_by_subset \
   --output-dir ../tool_decision_neurons_data/neurons \
   --make-figures \
-  --overwrite
+  --skip-existing
 ```
+
+本阶段是纯数据处理和画图，不需要占 GPU；`--skip-existing` 会在最终 manifest 已存在时提前跳过。
 
 输出：
 
@@ -658,7 +676,7 @@ $DATA_ROOT/visualizations/<model_alias>/shared_by_subset/
 每个任务类型跑 `Base`、`M-Random`、`M-CTD`、`M-Private_c`。`M-Private_c` 是该类型单类型 TDN 去掉共享 CTD 后的私有神经元，用来验证真正跨类型负责的是共享神经元。
 
 ```bash
-python code/07_cross_type_causal_validation/run_cross_type_causal_validation.py \
+python code/10_multigpu/run_stage8_cross_type_causal_validation_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
@@ -666,12 +684,16 @@ python code/07_cross_type_causal_validation/run_cross_type_causal_validation.py 
   --single-type-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/single_type_by_subset \
   --output-dir ../tool_decision_neurons_data/causal_validation \
   --subsets single_hop multi_hop \
+  --task-types A B C \
   --split test \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --max-rounds 10 \
   --max-new-tokens 2048 \
-  --record-mode lite \
-  --overwrite
+  --record-mode lite
 ```
+
+单机 8 卡按 `subset × task_type` 并行跑；每个任务内部仍评测 `Base/M-Random/M-CTD/M-Private_c`。全部任务结束后自动 refresh 汇总表格和图。
 
 输出：
 
@@ -712,14 +734,17 @@ $DATA_ROOT/causal_validation/<model_alias>/cross_type_by_subset/
 训练轨迹按改造后数据集的 `tool_necessary` 构造：`0` 类样本监督 no-tool 直接最终答案，`1` 类样本用 When2Tool 官方 env 构造工具可用的 tool call、tool response、final answer 轨迹。解析失败的样本写入 `skipped_examples.jsonl`，不混入 loss。
 
 ```bash
-python code/08_training/train_shared_neurons.py \
+python code/10_multigpu/run_stage9_train_shared_neurons_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
   --shared-dir ../tool_decision_neurons_data/neurons/qwen3-4b-instruct/shared_by_subset \
   --output-dir ../tool_decision_neurons_data/training \
   --subsets single_hop multi_hop \
+  --task-types A B C \
   --split train \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --epochs 3 \
   --per-device-train-batch-size 1 \
   --gradient-accumulation-steps 16 \
@@ -727,9 +752,10 @@ python code/08_training/train_shared_neurons.py \
   --warmup-ratio 0.03 \
   --max-length 2048 \
   --torch-dtype bfloat16 \
-  --device-map auto \
-  --overwrite
+  --device-map auto
 ```
+
+single_hop / multi_hop 是两个独立训练目标，八卡 runner 会并行训练两个 delta checkpoint；已有完整 subset checkpoint 时默认提前跳过。
 
 输出：
 
@@ -752,7 +778,7 @@ $DATA_ROOT/training/<model_alias>/neuron_training_by_subset/
 本阶段加载阶段 9 的 CTD delta checkpoint，在 test split 上重新评测，并和阶段 8 的 `Base` 结果汇总对比。指标继续对齐 When2Tool：`Acc`、`TC`、`AvgTC`、`TCR`，并保留工具决策指标 `ToolAcc`、`ToolNecessaryAcc`、`NoToolAcc`。`AUROC` 在本阶段没有额外 probe 分数时记为 `NA`。
 
 ```bash
-python code/09_evaluation/evaluate_training_summary.py \
+python code/10_multigpu/run_stage10_evaluate_training_summary_8gpu.py \
   --model-alias qwen3-4b-instruct \
   --model-path ../Qwen/qwen3-4b-instruct \
   --modified-dir ../tool_decision_neurons_data/datasets/modified_when2tool/qwen3-4b-instruct \
@@ -760,12 +786,16 @@ python code/09_evaluation/evaluate_training_summary.py \
   --default-eval-dir ../tool_decision_neurons_data/causal_validation/qwen3-4b-instruct/cross_type_by_subset \
   --output-dir ../tool_decision_neurons_data/outputs \
   --subsets single_hop multi_hop \
+  --task-types A B C \
   --split test \
+  --num-gpus 8 \
+  --cuda-devices 0,1,2,3,4,5,6,7 \
   --max-rounds 10 \
   --max-new-tokens 2048 \
-  --record-mode lite \
-  --overwrite
+  --record-mode lite
 ```
+
+单机 8 卡按 `subset × task_type` 并行评测训练后的 CTD delta，最后自动 refresh 生成 Default vs CTD-training 汇总表。
 
 输出：
 
@@ -814,6 +844,7 @@ llama3.3-70b
 07_cross_type_causal_validation
 08_training
 09_evaluation
+10_multigpu
 ```
 
 每个阶段输出建议包含：

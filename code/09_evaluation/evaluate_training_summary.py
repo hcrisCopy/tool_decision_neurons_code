@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--record-mode", default="lite", choices=["lite", "full", "off"])
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--refresh-existing",
+        action="store_true",
+        help="Recompute tables/manifests from existing CTD-training per_task.jsonl files without loading the model.",
+    )
     return parser.parse_args()
 
 
@@ -205,6 +210,39 @@ def run_trained_eval(
                 "method": "CTD-training",
                 "intervention": "CTD-training",
                 "mask_count": 0,
+                "auroc": "NA",
+            }
+        )
+        write_json(run_dir / "summary.json", summary)
+        all_rows.extend(rows)
+        summary_rows.append(summary)
+    return all_rows, summary_rows
+
+
+def refresh_trained_eval(
+    args: argparse.Namespace,
+    subset: str,
+    output_root: Path,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    all_rows: List[Dict[str, Any]] = []
+    summary_rows: List[Dict[str, Any]] = []
+    for task_type in args.task_types:
+        run_dir = output_root / subset / task_type / "CTD-training"
+        rows = read_jsonl(run_dir / "per_task.jsonl")
+        for row in rows:
+            row["method"] = "CTD-training"
+            row["intervention"] = "CTD-training"
+            row["subset_scope"] = subset
+        summary = stage6.summarize_rows(rows)
+        old_summary = read_json(run_dir / "summary.json") if (run_dir / "summary.json").exists() else {}
+        summary.update(
+            {
+                "model_alias": old_summary.get("model_alias", args.model_alias),
+                "subset_scope": subset,
+                "task_type": task_type,
+                "method": "CTD-training",
+                "intervention": "CTD-training",
+                "mask_count": old_summary.get("mask_count", 0),
                 "auroc": "NA",
             }
         )
@@ -362,9 +400,9 @@ def markdown_summary(summary_rows: List[Dict[str, Any]], delta_rows: List[Dict[s
 def main() -> None:
     args = parse_args()
     output_root = Path(args.output_dir) / args.model_alias / "training_summary_by_subset"
-    if output_root.exists() and not args.overwrite:
+    if output_root.exists() and not (args.overwrite or args.refresh_existing):
         raise FileExistsError(f"Output exists: {output_root}. Use --overwrite.")
-    if output_root.exists() and args.overwrite:
+    if output_root.exists() and args.overwrite and not args.refresh_existing:
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -380,11 +418,22 @@ def main() -> None:
         training_subset_dir = Path(args.training_dir) / subset
         training_manifest = read_json(training_subset_dir / "manifest.json")
         training_manifests[subset] = training_manifest
-        generator = stage6.CausalHFGenerator(args.model_path, args)
-        applied_delta_summaries[subset] = apply_ctd_delta(generator.model, training_subset_dir / "ctd_neuron_delta.pt")
+        if args.refresh_existing:
+            applied_delta_summaries[subset] = {
+                "checkpoint_path": str(training_subset_dir / "ctd_neuron_delta.pt"),
+                "refreshed_from_existing_per_task": True,
+            }
+            generator = None
+        else:
+            generator = stage6.CausalHFGenerator(args.model_path, args)
+            applied_delta_summaries[subset] = apply_ctd_delta(generator.model, training_subset_dir / "ctd_neuron_delta.pt")
 
         default_rows, default_summary = load_default_rows(Path(args.default_eval_dir), subset, args.task_types)
-        trained_rows, trained_summary = run_trained_eval(args, subset, generator, tool_format, output_root)
+        if args.refresh_existing:
+            trained_rows, trained_summary = refresh_trained_eval(args, subset, output_root)
+        else:
+            assert generator is not None
+            trained_rows, trained_summary = run_trained_eval(args, subset, generator, tool_format, output_root)
 
         for row in default_rows + trained_rows:
             row["subset_scope"] = subset
@@ -395,10 +444,11 @@ def main() -> None:
 
         aggregate_summary_rows.append(aggregate_rows(default_rows, args.model_alias, subset, "Default"))
         aggregate_summary_rows.append(aggregate_rows(trained_rows, args.model_alias, subset, "CTD-training"))
-        del generator
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+        if generator is not None:
+            del generator
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
 
     for method in ("Default", "CTD-training"):
         rows = [row for row in all_per_task_rows if row.get("method") == method]
@@ -439,6 +489,7 @@ def main() -> None:
                 "Cost": "DeltaAcc / -DeltaAvgTC when DeltaAvgTC < 0",
             },
             "neuron_definition": "Q/K/V neurons are W_Q/W_K/W_V rows; O neurons are W_O columns.",
+            "refreshed_from_existing_per_task": bool(args.refresh_existing),
             "applied_delta_summary": applied_delta_summaries,
             "training_manifests": training_manifests,
         },

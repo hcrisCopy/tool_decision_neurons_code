@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--visualization-dir", default="", help="Default: <data-root>/visualizations/<model>/shared_by_subset when --make-figures is set.")
     parser.add_argument("--make-figures", action="store_true")
     parser.add_argument("--subsets", nargs="+", default=list(SUBSETS), choices=SUBSETS)
+    parser.add_argument("--skip-existing", action="store_true", help="Return early when the final manifest already exists.")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -383,6 +384,9 @@ def main() -> None:
     base_output = Path(args.output_dir) if args.output_dir else data_root / "neurons"
     output_root = base_output / args.model_alias / "shared_by_subset"
     vis_root = Path(args.visualization_dir) if args.visualization_dir else data_root / "visualizations" / args.model_alias / "shared_by_subset"
+    if args.skip_existing and not args.overwrite and (output_root / "manifest.json").exists():
+        print(f"[skip] stage 7 already complete: {output_root}")
+        return
     ensure_empty_or_create(output_root, args.overwrite)
     if args.make_figures:
         ensure_empty_or_create(vis_root, args.overwrite)

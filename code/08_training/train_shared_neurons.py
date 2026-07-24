@@ -30,6 +30,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
+from tqdm.auto import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CODE_ROOT = REPO_ROOT / "code"
@@ -987,7 +988,8 @@ def train_subset(args: argparse.Namespace, subset: str) -> Dict[str, Any]:
     global_step = 0
     update_step = 0
     for epoch in range(int(args.epochs)):
-        for batch_idx, batch in enumerate(loader):
+        progress = tqdm(loader, desc=f"train {subset} epoch {epoch + 1}/{int(args.epochs)}", unit="batch")
+        for batch_idx, batch in enumerate(progress):
             batch = {key: value.to(device) for key, value in batch.items()}
             outputs = model(**batch)
             loss = outputs.loss / max(1, args.gradient_accumulation_steps)
@@ -1011,6 +1013,7 @@ def train_subset(args: argparse.Namespace, subset: str) -> Dict[str, Any]:
                         "lr": float(scheduler.get_last_lr()[0]),
                     }
                 )
+                progress.set_postfix(loss=f"{log_rows[-1]['loss']:.4f}", lr=f"{log_rows[-1]['lr']:.2e}")
 
     for hook in hooks:
         hook.remove()
