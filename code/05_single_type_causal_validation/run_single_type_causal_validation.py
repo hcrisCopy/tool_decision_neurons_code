@@ -62,6 +62,15 @@ SYSTEM_PROMPT_NATIVE = (
     "When you are done, provide the final answer in LaTeX boxed format: \\boxed{...}."
 )
 
+LIST_MANIPULATION_FORMAT_CONTRACT = (
+    "ListManipulation format contract:\n"
+    "1) There is no set_list tool. For every list-op call, you must provide values=<current list> explicitly.\n"
+    "2) For tool arguments, use plain lists [a,b,c] (1D) or [[...],[...]] (2D). Never use objects like {\"values\": [...]}.\n"
+    "3) At each step, parse current_list from the latest tool output, then call exactly one operation tool (append/remove/insert/sort/reverse).\n"
+    "4) Use one operation per tool call; do not batch multiple operations in one call.\n"
+    "5) For final answer, output exactly one plain list literal wrapped in box, e.g. \\boxed{[1, 2, 3]} or \\boxed{[[1, 2], [3, 4]]}; do NOT format it as LaTeX array/matrix.\n"
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -171,6 +180,12 @@ def build_current_no_reasoning_user_message(task_instruction: str) -> str:
         + "1) You can choose to use a tool or not in this task.\n"
         + "2) Provide final answer in \\boxed{...} if you think the task is complete."
     )
+
+
+def has_environment(task: Dict[str, Any], env_name: str) -> bool:
+    if str(task.get("env_name", "")) == env_name:
+        return True
+    return any(str(env.get("name", "")) == env_name for env in task.get("environments", []))
 
 
 def build_tools_schema(task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -645,6 +660,8 @@ class CausalHFGenerator:
 def initial_state(task: Dict[str, Any], system_prompt: str, tool_format: str, record_mode: str) -> Dict[str, Any]:
     envs, tools = build_envs(task)
     messages = [{"role": "system", "content": system_prompt}]
+    if has_environment(task, "ListManipulationEnv"):
+        messages.append({"role": "system", "content": LIST_MANIPULATION_FORMAT_CONTRACT})
     messages.append({"role": "user", "content": build_current_no_reasoning_user_message(task["instruction"])})
     return {
         "task": deepcopy(task),

@@ -586,10 +586,10 @@ def build_tool_calls(task: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any], st
 def make_sft_example(task: Dict[str, Any], tool_format: str) -> Tuple[Optional[SFTExample], Optional[str]]:
     system_prompt = stage6.system_prompt_for(tool_format)
     envs, tools = stage6.build_envs(task)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": stage6.build_current_no_reasoning_user_message(task["instruction"])},
-    ]
+    messages = [{"role": "system", "content": system_prompt}]
+    if stage6.has_environment(task, "ListManipulationEnv"):
+        messages.append({"role": "system", "content": stage6.LIST_MANIPULATION_FORMAT_CONTRACT})
+    messages.append({"role": "user", "content": stage6.build_current_no_reasoning_user_message(task["instruction"])})
     answer = (task.get("expected") or {}).get("answer", "")
     if int(task.get("tool_necessary", 0)) == 0:
         messages.append(final_answer_message(answer))
