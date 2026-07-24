@@ -60,6 +60,7 @@ def worker_root(args: argparse.Namespace, subset: str) -> Path:
 
 def build_job(args: argparse.Namespace, subset: str, device_group: str) -> mgpu.Job:
     temp_root = worker_root(args, subset)
+    mgpu.remove_if_exists(temp_root)
     device_map = mgpu.effective_device_map(args.device_map, device_group)
     cmd = mgpu.command(
         "code/04_single_type_neuron_probing/probe_single_type_neurons.py",
